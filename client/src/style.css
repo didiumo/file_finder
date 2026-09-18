@@ -1,0 +1,14 @@
+/* 全局基础样式 */
+:root {
+  --bg: #1e1f22;
+  --panel: #222428;
+  --border: #2e3137;
+  --text: #d5d9e0;
+  --text-dim: #8b919a;
+  --accent: #4c8bf5;
+  --danger: #e05c5c;
+  --warn: #f5b942;
+}
+
+button { font-family: inherit; }
+input, select { font-family: inherit; }
