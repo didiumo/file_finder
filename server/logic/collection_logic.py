@@ -161,6 +161,12 @@ class CollectionLogic:
         if not confirm:
             raise ValueError("请先确认执行（confirm=true），建议先调用 plan 预览")
 
+        # 安全护栏：收藏 = 保留清单，没有任何收藏时拒绝清理，防止误操作全删
+        if cleanup:
+            fav_n = await self.favorite_logic.count()
+            if fav_n <= 0:
+                raise ValueError("当前没有任何收藏文件，拒绝执行清理（收藏即保留清单，请先收藏要保留的内容）")
+
         roots = await self.indexer.list_roots()
         self._validate_collection_dir(roots)
         if root_ids:

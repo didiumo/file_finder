@@ -204,3 +204,8 @@ class FavoriteLogic:
         else:
             rows = await self.db.fetch_all(self.db_path, _LIST_SQL)
         return [dict(r) for r in rows]
+
+    async def count(self) -> int:
+        """收藏总数（轻量）"""
+        n = await self.db.fetch_val(self.db_path, "SELECT COUNT(*) FROM favorites", default=0)
+        return int(n or 0)
