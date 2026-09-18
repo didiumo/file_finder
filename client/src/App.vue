@@ -116,7 +116,7 @@ const pageCursors = [null]   // pageCursors[n] = 第 n 页的入参游标（来�
 const cfg = computed(() => viewCfg())
 const isTable = computed(() => store.viewMode === 'table')
 const activeTotal = computed(() => (store.tab === 'favorites' ? store.favTotal : store.searchTotal))
-const loadedCount = computed(() => loadedPages.value * pageSize)
+const loadedCount = computed(() => Math.min(loadedPages.value * pageSize, activeTotal.value))
 
 /* ---------- 数据装配 ---------- */
 
@@ -140,10 +140,12 @@ function searchParams(page, cursor) {
 async function fetchPage(pageIdx) {
   loadedPages.value = Math.max(loadedPages.value, pageIdx + 1)
   if (store.tab === 'favorites') {
-    const r = await apiFavorites.list({
+    const p = {
       q: store.q, root_id: store.rootId, sort: store.sort, order: store.order,
       page: pageIdx + 1, page_size: pageSize,
-    })
+    }
+    for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]
+    const r = await apiFavorites.list(p)
     store.favTotal = r.data.total
     // 收藏项映射 file_id → id（缩略图/预览用），缺失文件 id 为 null
     const items = r.data.items.map(f => ({

@@ -140,6 +140,8 @@ onMounted(() => {
   ro.observe(viewportEl.value)
   viewportH.value = viewportEl.value.clientHeight
   viewportW.value = viewportEl.value.clientWidth
+  // total=0 时没有任何可见单元格，必须主动拉取第 0 页，否则首屏永远空白
+  fetchAndCache(0)
 })
 onBeforeUnmount(() => { ro && ro.disconnect() })
 

@@ -47,7 +47,11 @@ const P = {
 }
 
 const filled = new Set(['star', 'play', 'zap'])
-const paths = computed(() => P[props.name] ? P[props.name].split(' ').filter(Boolean) : [])
+// 每个图标是一整条 d 路径（可含多个子路径段），不能按空格拆分
+const paths = computed(() => {
+  const d = P[props.name]
+  return d ? [d] : []
+})
 </script>
 
 <style scoped>
