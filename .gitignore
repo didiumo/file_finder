@@ -1,0 +1,17 @@
+# file_finder 独立仓库 .gitignore
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-lock
+thumbs/
+collected/
+dist/
+client/node_modules/
+client/dist/
+node_modules/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,28 @@
+# file_finder 服务私有配置
+# 优先级高于 config/settings.yaml 中 services.file_finder 段
+api_prefix: "/api/file_finder"
+
+# 多线程扫描并发数（网络共享目录建议 4~16）
+scan_workers: 8
+
+# 扫描时每个工作线程单次 scandir 的最大产出缓冲
+walk_queue_size: 20000
+
+# 分页默认大小（前端虚拟滚动按页拉取）
+page_size: 300
+
+# 文本类文件预览的最大读取字节数
+max_text_preview_bytes: 262144
+
+# 缩略图边长（像素）
+thumb_size: 256
+
+# 收藏整理的目标子目录（相对服务 data 目录）
+collection_dir: "collected"
+
+# 缩略图缓存子目录（相对服务 data 目录）
+thumb_dir: "thumbs"
+
+# 待扫描的局域网共享根目录（首次启动自动写入数据库，之后可在界面增删）
+roots:
+  - '\\Desktop-lt9c0uj\d\MJRelease\SimulatorApp_Data\mj'
