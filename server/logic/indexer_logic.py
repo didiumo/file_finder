@@ -23,7 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from plugins.task_plugin import TaskContext
 
-_SCHEMA = """
+_SCHEMA_STATEMENTS: List[str] = [
+    """
 CREATE TABLE IF NOT EXISTS roots (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     path             TEXT    NOT NULL UNIQUE,
@@ -34,7 +35,8 @@ CREATE TABLE IF NOT EXISTS roots (
     last_scan_elapsed REAL,
     created_at       REAL    NOT NULL
 );
-
+""",
+    """
 CREATE TABLE IF NOT EXISTS files (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     root_id    INTEGER NOT NULL,
@@ -48,12 +50,17 @@ CREATE TABLE IF NOT EXISTS files (
     indexed_at REAL    NOT NULL DEFAULT 0,
     UNIQUE(root_id, rel_path)
 );
-CREATE INDEX IF NOT EXISTS idx_files_root   ON files(root_id);
-CREATE INDEX IF NOT EXISTS idx_files_name   ON files(name);
-CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_dir);
-CREATE INDEX IF NOT EXISTS idx_files_ext    ON files(ext);
-CREATE INDEX IF NOT EXISTS idx_files_rel    ON files(rel_path);
-
+""",
+    "CREATE INDEX IF NOT EXISTS idx_files_root   ON files(root_id);",
+    "CREATE INDEX IF NOT EXISTS idx_files_name   ON files(name);",
+    "CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_dir);",
+    "CREATE INDEX IF NOT EXISTS idx_files_ext    ON files(ext);",
+    "CREATE INDEX IF NOT EXISTS idx_files_rel    ON files(rel_path);",
+    # 覆盖索引：支撑「浏览全部 + 按 name/size/mtime 排序」的无全表排序翻页
+    "CREATE INDEX IF NOT EXISTS idx_files_name_dir ON files(name, is_dir, id);",
+    "CREATE INDEX IF NOT EXISTS idx_files_size_dir ON files(size, is_dir, id);",
+    "CREATE INDEX IF NOT EXISTS idx_files_mtime_dir ON files(mtime, is_dir, id);",
+    """
 CREATE TABLE IF NOT EXISTS favorites (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     root_id    INTEGER NOT NULL,
@@ -65,7 +72,34 @@ CREATE TABLE IF NOT EXISTS favorites (
     created_at REAL    NOT NULL,
     UNIQUE(root_id, rel_path)
 );
-"""
+""",
+    # FTS5 全文索引（trigram 支持任意子串匹配，≥3 字符生效）
+    # 外链表 + 触发器同步，与 files 表事务一致
+    """
+CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+    name, rel_path,
+    tokenize = 'trigram',
+    content = 'files',
+    content_rowid = 'id'
+);
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS files_fts_ai AFTER INSERT ON files BEGIN
+    INSERT INTO files_fts(rowid, name, rel_path) VALUES (new.id, new.name, new.rel_path);
+END;
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS files_fts_ad AFTER DELETE ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, name, rel_path) VALUES ('delete', old.id, old.name, old.rel_path);
+END;
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS files_fts_au AFTER UPDATE OF name, rel_path ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, name, rel_path) VALUES ('delete', old.id, old.name, old.rel_path);
+    INSERT INTO files_fts(rowid, name, rel_path) VALUES (new.id, new.name, new.rel_path);
+END;
+""",
+]
 
 _INSERT_SQL = (
     "INSERT OR REPLACE INTO files "
@@ -101,11 +135,75 @@ class IndexerLogic:
     # 建表 / 初始化
     # ------------------------------------------------------------------
     async def init_db(self):
-        for stmt in _SCHEMA.split(";"):
+        for stmt in _SCHEMA_STATEMENTS:
             s = stmt.strip()
             if s:
                 await self.db.execute(self.db_path, s)
+        await self._sync_fts_backfill()
         self.log.info("file_finder 数据库表结构已就绪")
+
+    async def _sync_fts_backfill(self):
+        """FTS 与 files 行数不一致 / 索引异常时重建（首次升级、意外漂移、损坏兜底）"""
+        probe = None
+        try:
+            fts_n = await self.db.fetch_val(self.db_path, "SELECT COUNT(*) FROM files_fts", default=-1)
+            files_n = await self.db.fetch_val(self.db_path, "SELECT COUNT(*) FROM files", default=-1)
+            if fts_n is not None and files_n is not None and int(fts_n or 0) == int(files_n or 0):
+                # 行数一致但索引可能损坏：轻量探活（MATCH 一个常见词）
+                probe = await self.db.fetch_val(
+                    self.db_path,
+                    "SELECT COUNT(*) FROM files_fts WHERE files_fts MATCH 'json'",
+                    default=-1,
+                )
+                if probe is not None and int(probe or 0) >= 0:
+                    return
+            self.log.info(
+                f"FTS 索引需重建（fts={fts_n} files={files_n} probe={probe}）"
+            )
+        except Exception as e:
+            self.log.warning(f"FTS 索引异常（{e}），将重建")
+        await self._rebuild_fts()
+        self.log.info("FTS 索引重建完成")
+
+    async def _rebuild_fts(self):
+        """删除并重建 FTS 虚表 + 触发器 + 回填（损坏恢复）"""
+        for t in ("files_fts_ai", "files_fts_ad", "files_fts_au"):
+            await self.db.execute(self.db_path, f"DROP TRIGGER IF EXISTS {t}")
+        await self.db.execute(self.db_path, "DROP TABLE IF EXISTS files_fts")
+        await self.db.execute(
+            self.db_path,
+            """
+            CREATE VIRTUAL TABLE files_fts USING fts5(
+                name, rel_path,
+                tokenize = 'trigram',
+                content = 'files',
+                content_rowid = 'id'
+            )
+            """,
+        )
+        for t in (
+            """
+            CREATE TRIGGER files_fts_ai AFTER INSERT ON files BEGIN
+                INSERT INTO files_fts(rowid, name, rel_path) VALUES (new.id, new.name, new.rel_path);
+            END;
+            """,
+            """
+            CREATE TRIGGER files_fts_ad AFTER DELETE ON files BEGIN
+                INSERT INTO files_fts(files_fts, rowid, name, rel_path) VALUES ('delete', old.id, old.name, old.rel_path);
+            END;
+            """,
+            """
+            CREATE TRIGGER files_fts_au AFTER UPDATE OF name, rel_path ON files BEGIN
+                INSERT INTO files_fts(files_fts, rowid, name, rel_path) VALUES ('delete', old.id, old.name, old.rel_path);
+                INSERT INTO files_fts(rowid, name, rel_path) VALUES (new.id, new.name, new.rel_path);
+            END;
+            """,
+        ):
+            await self.db.execute(self.db_path, t)
+        await self.db.execute(
+            self.db_path,
+            "INSERT INTO files_fts(rowid, name, rel_path) SELECT id, name, rel_path FROM files",
+        )
 
     async def seed_roots_from_config(self):
         """将配置中的默认根目录写入数据库（幂等）"""

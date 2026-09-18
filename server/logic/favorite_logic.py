@@ -15,6 +15,7 @@ _LIST_SQL = """
 SELECT fa.id AS fav_id, fa.root_id, fa.rel_path, fa.name, fa.ext,
        fa.size AS fav_size, fa.mtime AS fav_mtime, fa.created_at,
        r.path AS root_path, r.display_name AS root_name,
+       f.id AS file_id,
        CASE WHEN f.id IS NULL THEN 0 ELSE 1 END AS exists_now,
        COALESCE(f.size, fa.size) AS size,
        COALESCE(f.mtime, fa.mtime) AS mtime
@@ -183,6 +184,7 @@ class FavoriteLogic:
                 "created_at": d["created_at"],
                 "root_path": d["root_path"],
                 "root_name": d["root_name"],
+                "file_id": d["file_id"],
                 "exists_now": bool(d["exists_now"]),
             })
         return {

@@ -53,16 +53,29 @@ class SearchLogic:
         order: str = "asc",
         page: int = 1,
         page_size: int = 300,
+        after_name: Optional[Any] = None,
+        after_size: Optional[int] = None,
+        after_mtime: Optional[float] = None,
+        after_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         where: List[str] = []
         params: List[Any] = []
 
         q = (q or "").strip()
         if q:
-            esc = _escape_like(q)
-            like = f"%{esc}%"
-            where.append("(f.name LIKE ? ESCAPE '\\' OR f.rel_path LIKE ? ESCAPE '\\')")
-            params.extend([like, like])
+            if len(q) >= 3:
+                # FTS5 trigram：任意子串匹配（大小写不敏感），毫秒级
+                fts_q = q.replace('"', '""')
+                where.append(
+                    "f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)"
+                )
+                params.append(f'"{fts_q}"')
+            else:
+                # 短词（1~2 字符）trigram 无法匹配，回退 LIKE（命中多时早停，够快）
+                esc = _escape_like(q)
+                like = f"%{esc}%"
+                where.append("(f.name LIKE ? ESCAPE '\\' OR f.rel_path LIKE ? ESCAPE '\\')")
+                params.extend([like, like])
         if root_id is not None:
             where.append("f.root_id = ?")
             params.append(root_id)
@@ -88,12 +101,24 @@ class SearchLogic:
         if fav_only:
             where.append("EXISTS(SELECT 1 FROM favorites fa WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path)")
 
-        where_sql = " AND ".join(where) if where else "1=1"
         sort_col = {"name": "f.name", "size": "f.size", "mtime": "f.mtime"}.get(sort, "f.name")
         order_sql = "DESC" if str(order).lower() == "desc" else "ASC"
         page = max(1, int(page))
         page_size = max(1, min(2000, int(page_size)))
-        offset = (page - 1) * page_size
+
+        # 游标分页：跳过 OFFSET 全扫描，深翻页 O(页大小)
+        after_val = {"name": after_name, "size": after_size, "mtime": after_mtime}.get(sort)
+        offset = None
+        if after_val is not None and after_id is not None:
+            if order_sql == "ASC":
+                where.append(f"({sort_col} > ? OR ({sort_col} = ? AND f.id > ?))")
+            else:
+                where.append(f"({sort_col} < ? OR ({sort_col} = ? AND f.id > ?))")
+            params.extend([after_val, after_val, after_id])
+        else:
+            offset = (page - 1) * page_size
+
+        where_sql = " AND ".join(where) if where else "1=1"
 
         total = await self.db.fetch_val(
             self.db_path,
@@ -102,18 +127,24 @@ class SearchLogic:
             default=0,
         )
 
+        limit_sql = f"LIMIT {page_size}"
+        offset_sql = "" if offset is None else f"OFFSET {offset}"
         rows = await self.db.fetch_all(
             self.db_path,
-            f"{_BASE_SELECT} AND {where_sql} ORDER BY {sort_col} {order_sql}, f.id ASC LIMIT ? OFFSET ?",
-            tuple(params) + (page_size, offset),
+            f"{_BASE_SELECT} AND {where_sql} ORDER BY {sort_col} {order_sql}, f.id ASC {limit_sql} {offset_sql}",
+            tuple(params),
         )
         items = [self._to_item(dict(r)) for r in rows]
+        next_cursor = None
+        if items:
+            next_cursor = {f"after_{sort}": items[-1][sort], "after_id": items[-1]["id"]}
         return {
             "total": int(total or 0),
             "page": page,
             "page_size": page_size,
-            "has_more": offset + len(items) < int(total or 0),
+            "has_more": len(items) >= page_size,
             "items": items,
+            "next_cursor": next_cursor,
         }
 
     @staticmethod

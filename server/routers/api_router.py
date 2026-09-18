@@ -108,10 +108,15 @@ async def setup_api_router(ctx) -> APIRouter:
         order: str = Query("asc"),
         page: int = Query(1),
         page_size: int = Query(300),
+        after_name: Optional[str] = Query(None),
+        after_size: Optional[int] = Query(None),
+        after_mtime: Optional[float] = Query(None),
+        after_id: Optional[int] = Query(None),
     ):
         return res2.data(
             await search.search(q, root_id, ext, size_min, size_max, date_from, date_to,
-                                fav_only, include_dirs, sort, order, page, page_size),
+                                fav_only, include_dirs, sort, order, page, page_size,
+                                after_name, after_size, after_mtime, after_id),
             request=request,
         )
 
