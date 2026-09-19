@@ -179,6 +179,7 @@ const visibleCells = computed(() => {
 })
 
 function cellStyle(cell) {
+  const pad = props.grid ? 5 : 0   // 网格模式在 cell 内留边距：卡片之间有间隙，支持从中间拉框多选
   return {
     position: 'absolute',
     top: cell.row * props.rowHeight + 'px',
@@ -186,6 +187,8 @@ function cellStyle(cell) {
     // 表格模式（grid=false）：行宽 = 视口宽，列由内部 flex 布局分配
     width: (props.grid ? props.colWidth : viewportW.value) + 'px',
     height: props.rowHeight + 'px',
+    padding: pad + 'px',
+    boxSizing: 'border-box',
   }
 }
 
