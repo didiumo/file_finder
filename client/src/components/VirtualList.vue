@@ -46,6 +46,7 @@ const version = ref(0)
 const pages = new Map()       // pageIndex -> items[]
 const inflight = new Map()    // pageIndex -> Promise
 const cellRefs = new Map()    // cell.index -> { el, item }（框选 / 范围选择用，随渲染实时更新）
+let mutationSeq = 0           // 数据变更代次：删除/清空后丢弃过期页响应
 
 function trackCell(el, cell) {
   if (el) cellRefs.set(cell.index, { el, item: cell.item })
@@ -60,18 +61,56 @@ const pageOf = idx => Math.floor(idx / props.pageSize)
 
 function fetchAndCache(page) {
   if (pages.has(page) || inflight.has(page)) return
+  const seq = mutationSeq
   const p = Promise.resolve(props.fetchPage(page))
     .then(res => {
+      if (seq !== mutationSeq) return res   // 期间发生删除/清空：丢弃过期响应
       pages.set(page, res?.items || [])
       if (typeof res?.total === 'number') emit('total-update', res.total)
       return res
     })
-    .catch(() => { pages.set(page, []) })
+    .catch(() => { if (seq === mutationSeq) pages.set(page, []) })
     .finally(() => {
       inflight.delete(page)
       version.value++
     })
   inflight.set(page, p)
+}
+
+// 局部数据变更：从已缓存页移除 ids，删除点之后的页失效重拉，不重建整个列表
+// totalHint 可选：直接更新总数（后端返回的实际变化数，含目录子树）
+function removeAndRefresh(ids, totalHint) {
+  const set = new Set(ids)
+  let firstAffected = Infinity
+  for (const [page, items] of pages) {
+    if (items.some(it => it && set.has(it.id))) {
+      if (page < firstAffected) firstAffected = page
+      pages.set(page, items.filter(it => !(it && set.has(it.id))))
+    }
+  }
+  mutationSeq++
+  if (firstAffected === Infinity) {
+    // 已加载页没有命中（如跨列表场景）：轻量全量重置，由渲染循环重新拉取
+    inflight.clear()
+    if (typeof totalHint === 'number') emit('total-update', totalHint)
+    version.value++
+    return
+  }
+  // 删除点之后的页数据整体前移，缓存失效（滚动到时重新拉取）
+  for (const page of [...pages.keys()]) if (page > firstAffected) pages.delete(page)
+  inflight.clear()
+  if (typeof totalHint === 'number') emit('total-update', totalHint)
+  version.value++
+  fetchAndCache(firstAffected)   // 重拉删除点页：最新数据 + 总数修正
+}
+
+// 整体清空（如清空回收站）
+function clearAll(totalHint) {
+  mutationSeq++
+  pages.clear()
+  inflight.clear()
+  if (typeof totalHint === 'number') emit('total-update', totalHint)
+  version.value++
 }
 
 const visibleCells = computed(() => {
@@ -168,7 +207,7 @@ watch(() => props.total, () => { version.value++ })
 function getCells() {
   return [...cellRefs.values()].filter(c => c.el && c.item)
 }
-defineExpose({ reset, pages, scrollTo, getScrollTop, getCells })
+defineExpose({ reset, pages, scrollTo, getScrollTop, getCells, removeAndRefresh, clearAll })
 </script>
 
 <style scoped>

@@ -711,9 +711,15 @@ async function batchDelete() {
   }
   markKeepPos()
   // 移入回收站可随时恢复，不做二次确认（高频操作）
-  await apiFiles.batchDelete(withId.map(i => i.id))
+  const r = await apiFiles.batchDelete(withId.map(i => i.id))
   clearSelection()
-  onFilterChange()
+  const moved = r.data?.moved || 0
+  // 局部刷新：只更新删除点之后的缓存，不重建整个列表（避免白屏）
+  const curTotal = store.tab === 'fs' ? store.fsTotal : store.searchTotal
+  if (listRef.value) listRef.value.removeAndRefresh(withId.map(i => i.id), Math.max(0, curTotal - moved))
+  else onFilterChange()
+  store.trashTotal += moved
+  refreshStats()
 }
 async function batchRestore() {
   const items = selectedItems()
@@ -722,7 +728,10 @@ async function batchRestore() {
   const r = await apiTrash.restore(items.map(i => i.id))
   alert(`已恢复 ${r.data.restored} 项` + (r.data.errors?.length ? `；${r.data.errors.length} 项失败（目标位置已存在同名文件）` : ''))
   clearSelection()
-  onFilterChange()
+  const restored = r.data?.restored || 0
+  if (listRef.value) listRef.value.removeAndRefresh(items.map(i => i.id), Math.max(0, store.trashTotal - restored))
+  else onFilterChange()
+  refreshStats()
 }
 /* ---------- 自定义确认对话框（替代原生 confirm） ---------- */
 const confirmBox = ref(null)   // { title, message, danger, resolve }
@@ -748,9 +757,12 @@ async function batchPurge() {
   const ok = await askConfirm('彻底删除', `确定彻底删除 ${items.length} 项？文件将从磁盘移除，此操作不可恢复。`, true)
   if (!ok) return
   markKeepPos()
-  await apiTrash.purge(items.map(i => i.id))
+  const r = await apiTrash.purge(items.map(i => i.id))
   clearSelection()
-  onFilterChange()
+  const purged = r.data?.purged || 0
+  if (listRef.value) listRef.value.removeAndRefresh(items.map(i => i.id), Math.max(0, store.trashTotal - purged))
+  else onFilterChange()
+  refreshStats()
 }
 async function trashEmpty() {
   const ok = await askConfirm('清空回收站', '回收站将被清空，所有条目彻底删除（磁盘文件同时移除），此操作不可恢复。', true)
@@ -758,7 +770,9 @@ async function trashEmpty() {
   markKeepPos()
   await apiTrash.empty()
   clearSelection()
-  onFilterChange()
+  if (listRef.value) listRef.value.clearAll(0)
+  else onFilterChange()
+  refreshStats()
 }
 
 async function onToggleFav(item) {
