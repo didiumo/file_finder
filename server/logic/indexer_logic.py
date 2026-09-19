@@ -484,7 +484,8 @@ class IndexerLogic:
                                  mode: str):
         """消费记录队列，按模式增量/全量写入数据库"""
         batch: List[tuple] = []
-        inserted = updated = deleted = 0
+        inserted = updated = deleted = revived = 0
+        revived_rows: List[tuple] = []
         processed_since_yield = 0
 
         if mode == "full":
@@ -522,6 +523,11 @@ class IndexerLogic:
                 if old is None:
                     batch.append((root_id, rel, name, parent, ext, size, mtime, is_dir, time.time()))
                     inserted += 1
+                elif old[4]:
+                    # 回收站条目复活：原位置出现了同名新文件（用户删除后又新建）。
+                    # 必须清除 trashed 标记并刷新元数据，否则新文件被搜索/回收站过滤排除。
+                    revived_rows.append((size, mtime, is_dir, time.time(), old[0]))
+                    revived += 1
                 elif old[1] != size or old[2] != mtime or old[3] != is_dir:
                     changed.append((size, mtime, time.time(), old[0]))
                     updated += 1
@@ -553,6 +559,13 @@ class IndexerLogic:
                     "UPDATE files SET size=?, mtime=?, indexed_at=? WHERE id=?",
                     changed,
                 )
+            # 复活回收站条目（原位置同名新文件）
+            if revived_rows:
+                await self.db.execute_many(
+                    self.db_path,
+                    "UPDATE files SET trashed=0, trashed_at=0, size=?, mtime=?, is_dir=?, indexed_at=? WHERE id=?",
+                    revived_rows,
+                )
             # 删除磁盘上已不存在的行（增量同步的核心价值：不重扫也能保持准确）
             # 注意：回收站条目（trashed=1）物理位置已移到 .ff_trash，不作为“缺失”删除
             missing_ids = []
@@ -572,7 +585,7 @@ class IndexerLogic:
                 current=stats["files"], total=stats["files"],
                 percent=95, stage=f"写入数据库完成（新增 {inserted} / 更新 {updated} / 删除 {deleted}）",
             )
-        self.log.info(f"索引写入完成 mode={mode} 新增={inserted} 更新={updated} 删除={deleted}")
+        self.log.info(f"索引写入完成 mode={mode} 新增={inserted} 更新={updated} 复活={revived} 删除={deleted}")
 
     async def _load_existing(self, root_id: int) -> Dict[str, Tuple[int, int, float, int, int]]:
         """加载指定根目录现有索引: rel_path -> (id, size, mtime, is_dir, trashed)"""
