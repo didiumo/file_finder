@@ -30,7 +30,10 @@
             <Icon name="folder" :size="56" style="color:#e8c468" />
             <p>{{ item.indexed === false ? '目录（未索引，实时浏览）' : '目录' }}</p>
             <p class="ext">{{ item.rel_path || item.root_path }}</p>
-            <p class="tip">双击卡片可进入目录浏览</p>
+            <button class="enter-btn" @click="$emit('enter')">
+              <Icon name="arrow-right" :size="14" /> 进入目录
+            </button>
+            <p class="tip">双击卡片可收藏 / 取消收藏</p>
           </div>
         </template>
         <!-- 未索引文件 -->
@@ -289,4 +292,10 @@ onBeforeUnmount(() => { controller && controller.abort() })
   border-top: 1px solid #2e3137; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left;
 }
+.enter-btn {
+  margin-top: 14px; display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 16px; border-radius: 8px; border: 1px solid rgba(76,139,245,.5);
+  background: rgba(76,139,245,.15); color: #9cc0ff; font-size: 12px; cursor: pointer;
+}
+.enter-btn:hover { background: rgba(76,139,245,.28); }
 </style>

@@ -203,6 +203,10 @@ function reset() {
   inflight.clear()
   version.value++
 }
+// 轻量重渲染：数据不变但强制重算可视单元格（用于 item 属性就地更新后的星标等反馈）
+function bump() {
+  version.value++
+}
 function getScrollTop() {
   return viewportEl.value ? viewportEl.value.scrollTop : 0
 }
@@ -235,7 +239,7 @@ watch(() => props.total, () => { version.value++ })
 function getCells() {
   return [...cellRefs.values()].filter(c => c.el && c.item)
 }
-defineExpose({ reset, pages, scrollTo, getScrollTop, getCells, removeAndRefresh, clearAll })
+defineExpose({ reset, bump, pages, scrollTo, getScrollTop, getCells, removeAndRefresh, clearAll })
 </script>
 
 <style scoped>

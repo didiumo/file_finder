@@ -158,7 +158,7 @@
         </div>
       </div>
 
-      <PreviewPanel v-if="store.showPreview && store.tab !== 'trash'" @deleted="onFilterChange" />
+      <PreviewPanel v-if="store.showPreview && store.tab !== 'trash'" @deleted="onFilterChange" @enter="onPreviewEnter" />
     </div>
 
     <TaskBar ref="taskBarRef" />
@@ -599,18 +599,33 @@ function onBoxUp() {
   selKeys.value = next
 }
 
-function onCellDbl(item) {
-  if (!item) return
-  if (item.is_dir) {
-    if (store.tab === 'fs') enterDir(item)
-    else openFsDir(item)
-    return
-  }
-  // 双击下载（模拟 Everything 双击打开）
+function downloadItem(item) {
+  if (!item || !item.id) return
   const a = document.createElement('a')
   a.href = apiFiles.downloadUrl(item.id)
   a.download = item.name
   a.click()
+}
+function onCellDbl(item) {
+  if (!item) return
+  // 双击收藏（手机端主用）：搜索/收藏/文件系统视图统一切换收藏
+  if (store.tab === 'trash') {
+    // 回收站保留原行为：目录跳转到文件系统浏览，文件直接下载
+    if (item.is_dir) openFsDir(item)
+    else downloadItem(item)
+    return
+  }
+  if (!item.id) {
+    alert('该文件未索引，无法收藏（请先扫描根目录）')
+    return
+  }
+  onToggleFav(item)
+}
+function onPreviewEnter() {
+  const item = store.selected
+  if (!item || !item.is_dir) return
+  if (store.tab === 'fs') enterDir(item)
+  else openFsDir(item)
 }
 
 /* ---------- 右键菜单 ---------- */
@@ -823,6 +838,8 @@ async function onToggleFav(item) {
   item.favorite = r.data.favorite
   if (r.data.favorite) store.favTotal++
   else store.favTotal = Math.max(0, store.favTotal - 1)
+  // 列表数据是非响应式 Map：就地更新 favorite 后需强制重渲染，星标才会即时出现
+  if (listRef.value) listRef.value.bump()
 }
 
 async function pruneMissing() {
