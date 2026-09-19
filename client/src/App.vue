@@ -525,17 +525,21 @@ function onCellClick(item, e) {
       selAnchor = k
     }
   } else if (shift && selAnchor != null) {
+    // Shift 语义：每次点击都以锚点为基准重算区间（锚点 → 当前项），替换选区而非追加，
+    // 因此连续多次 Shift 点击可任意伸缩（选 10 个后点第 5 个会收缩为前 5 个）
     const ids = orderedItems().map(selKeyOf)
     const a = ids.indexOf(selAnchor)
     const b = ids.indexOf(k)
-    const next = new Set(selKeys.value)
     if (a >= 0 && b >= 0) {
       const [lo, hi] = a < b ? [a, b] : [b, a]
+      const next = new Set()
       for (let i = lo; i <= hi; i++) if (ids[i]) next.add(ids[i])
+      selKeys.value = next
     } else {
-      next.add(k)
+      // 锚点不在已加载列表（虚拟列表页被释放）时退化为锚点 + 当前项
+      const next = new Set([selAnchor, k])
+      selKeys.value = next
     }
-    selKeys.value = next
   } else {
     selKeys.value = new Set([k])
     selAnchor = k
