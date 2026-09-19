@@ -377,8 +377,10 @@ async function fetchPage(pageIdx) {
     res.data.items = res.data.items.map(f => ({ ...f, id: f.file_id || null, favorite: true }))
   } else if (store.tab === 'trash') {
     if (store.sort === 'name') store.sort = 'trashed_at'
+    // 按删除时间排序时固定降序：最新删除的排最前（刚删的文件立即可见）
     const p = {
-      q: store.q, root_id: store.rootId, sort: store.sort, order: store.order,
+      q: store.q, root_id: store.rootId, sort: store.sort,
+      order: store.sort === 'trashed_at' ? 'desc' : store.order,
       page: pageIdx + 1, page_size: pageSize,
     }
     for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]

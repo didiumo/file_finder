@@ -14,7 +14,6 @@
       </button>
       <button class="tab" :class="{ on: store.tab === 'trash' }" @click="switchTab('trash')">
         <Icon name="trash" :size="14" /> 回收站
-        <span v-if="store.trashTotal > 0" class="cnt danger">{{ store.trashTotal }}</span>
       </button>
     </div>
 
@@ -78,7 +77,7 @@
       </select>
 
       <select v-model="store.sort" class="sel" title="排序字段" @change="onFilterChange">
-        <option v-if="store.tab === 'trash'" value="trashed_at">按删除时间</option>
+        <option v-if="store.tab === 'trash'" value="trashed_at">按删除时间（最新在前）</option>
         <option value="name">按名称</option>
         <option value="size">按大小</option>
         <option value="mtime">按修改时间</option>
@@ -174,6 +173,10 @@ function setView(m) {
   emit('filter-change')
 }
 function switchTab(t) {
+  if (t === 'trash' && store.sort !== 'trashed_at') {
+    store.sort = 'trashed_at'
+    store.order = 'desc'
+  }
   if (t !== 'trash' && store.sort === 'trashed_at') store.sort = 'name'
   store.tab = t
   store.selected = null
