@@ -10,7 +10,6 @@
       </button>
       <button class="tab" :class="{ on: store.tab === 'favorites' }" @click="switchTab('favorites')">
         <Icon name="star" :size="14" /> 收藏
-        <span v-if="store.favTotal > 0" class="cnt">{{ store.favTotal }}</span>
       </button>
       <button class="tab" :class="{ on: store.tab === 'trash' }" @click="switchTab('trash')">
         <Icon name="trash" :size="14" /> 回收站
