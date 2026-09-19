@@ -22,7 +22,7 @@
         <Icon v-else :name="iconName" :size="iconSize" :style="{ color: item.is_dir ? '#e8c468' : fileColor(item) }" />
         <span v-if="isVideo" class="play-badge"><Icon name="play" :size="14" /></span>
         <span v-if="item.is_dir" class="dir-badge"><Icon name="folder" :size="14" /></span>
-        <span v-if="item.favorite" class="fav-badge"><Icon name="star" :size="13" /></span>
+        <span v-if="item.favorite" class="fav-badge" title="取消收藏" @click.stop="$emit('fav', item)"><Icon name="star" :size="13" /></span>
         <span v-if="item.exists_now === false" class="missing-badge">丢失</span>
       </template>
       <div v-else class="skeleton"></div>

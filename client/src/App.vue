@@ -90,8 +90,8 @@
               <span class="t-size" :style="colStyle({ key: 'size' })">{{ item ? formatSize(item.size) : '' }}</span>
               <span class="t-date" :style="colStyle({ key: 'mtime' })">{{ item ? formatDate(item.mtime) : '' }}</span>
               <span class="t-path" style="flex:1 1 0; min-width:80px" :title="item && item.root_path">{{ item ? item.root_path : '' }}</span>
-              <span class="t-fav" :style="{ width: 24 }">
-                <Icon v-if="item && (item.favorite || item.fav_id)" name="star" :size="13" style="color:#f5b942" />
+              <span class="t-fav" :style="{ width: 24 }" @click.stop="item && onToggleFav(item)" :title="item && (item.favorite || item.fav_id) ? '取消收藏' : ''">
+                <Icon v-if="item && (item.favorite || item.fav_id)" name="star" :size="13" style="color:#f5b942; cursor:pointer" />
               </span>
               <span v-if="item && item.exists_now === false" class="t-miss">丢失</span>
             </div>
@@ -128,6 +128,10 @@
             <Icon name="eye" :size="12" /> {{ store.selected.name }}
           </span>
           <span class="st-spacer"></span>
+          <span v-if="deleting" class="st-item del-prog">
+            <span class="del-bar"><i :style="{ width: deleting.total ? (deleting.done / deleting.total * 100) + '%' : '0%' }"></i></span>
+            正在删除 <b>{{ deleting.done }}</b> / {{ deleting.total }}
+          </span>
           <template v-if="selCount && store.tab !== 'trash'">
             <button class="st-btn" @click="batchFav" :title="batchFavTitle">
               <Icon name="star" :size="13" /> 收藏
@@ -291,6 +295,8 @@ const taskBarRef = ref(null)
 const showRoots = ref(false)
 const showCollect = ref(false)
 const listKey = ref(0)
+// 批量删除进度（{ done, total }；null = 无进行中删除）
+const deleting = ref(null)
 const initialLoading = ref(true)
 const loadedPages = ref(0)
 const pageCursors = [null]   // pageCursors[n] = 第 n 页的入参游标（来自 n-1 页响应的 next_cursor）
@@ -668,7 +674,7 @@ function menuItems() {
   if (n === 1 && !one.is_dir && one.id) {
     items.push({ key: 'preview', label: '预览', icon: 'eye' })
   }
-  const fav = one && one.fav_id
+  const fav = one && (one.fav_id || one.favorite)
   items.push({
     key: 'fav', label: fav ? '取消收藏' : (n > 1 ? `收藏（${n} 项）` : '收藏'),
     icon: 'star',
@@ -730,11 +736,24 @@ async function batchDelete() {
     alert(`${items.length - withId.length} 项未索引，无法删除；将删除其余 ${withId.length} 项`)
   }
   markKeepPos()
-  // 移入回收站可随时恢复，不做二次确认（高频操作）
-  const r = await apiFiles.batchDelete(withId.map(i => i.id))
+  // 移入回收站可随时恢复，不做二次确认（高频操作）。分批删除并回显进度
+  const BATCH = 100
+  const ids = withId.map(i => i.id)
+  deleting.value = { done: 0, total: ids.length }
+  let moved = 0
+  const errs = []
+  try {
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const chunk = ids.slice(i, i + BATCH)
+      const r = await apiFiles.batchDelete(chunk)
+      deleting.value.done = Math.min(ids.length, i + chunk.length)
+      moved += r.data?.moved || 0
+      errs.push(...(r.data?.errors || []))
+    }
+  } finally {
+    deleting.value = null
+  }
   clearSelection()
-  const moved = r.data?.moved || 0
-  const errs = r.data?.errors || []
   // 移动失败的文件并未删除（仍在原位置），保留在列表并明确提示，避免"删了又恢复"的错觉
   const errSet = new Set(errs.map(e => e.rel_path))
   const okItems = withId.filter(i => !errSet.has(i.rel_path))
@@ -972,6 +991,9 @@ html, body, #app {
 ::-webkit-scrollbar-thumb { background: #3a3d44; border-radius: 5px; border: 2px solid #1e1f22; }
 ::-webkit-scrollbar-thumb:hover { background: #4a4e57; }
 ::-webkit-scrollbar-corner { background: transparent; }
+.del-prog { display: inline-flex; align-items: center; gap: 6px; color: #9aa4b2; font-size: 12px; }
+.del-bar { display: inline-block; width: 72px; height: 6px; border-radius: 3px; background: #2a2f3a; overflow: hidden; vertical-align: middle; }
+.del-bar i { display: block; height: 100%; background: #4c8bf5; border-radius: 3px; transition: width .15s ease; }
 </style>
 
 <style scoped>
