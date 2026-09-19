@@ -19,6 +19,7 @@ from ..logic.favorite_logic import FavoriteLogic
 from ..logic.preview_logic import PreviewLogic
 from ..logic.collection_logic import CollectionLogic
 from ..logic.fs_logic import FsLogic
+from ..logic.trash_logic import TrashLogic
 
 
 async def setup_api_router(ctx) -> APIRouter:
@@ -36,6 +37,7 @@ async def setup_api_router(ctx) -> APIRouter:
     preview = PreviewLogic(ctx)
     collect = CollectionLogic(ctx, indexer, favorites)
     fs = FsLogic(ctx)
+    trash = TrashLogic(ctx)
 
     router = APIRouter(prefix=api_prefix, tags=["file_finder"])
 
@@ -141,20 +143,62 @@ async def setup_api_router(ctx) -> APIRouter:
         item = await search.get_file(file_id)
         if not item:
             return res2.error(f"文件 #{file_id} 不存在", code=404, request=request)
-        if item["is_dir"]:
-            return res2.error("目录不可直接删除，请使用整理/清理流程", code=400, request=request)
-        await search._delete_one(item)
-        await audit("files.delete", request, {"file_id": file_id, "name": item["name"]})
-        return res2.data({"deleted": file_id}, msg="已删除", request=request)
+        if item["trashed"]:
+            return res2.error(f"文件 #{file_id} 已在回收站", code=400, request=request)
+        result = await trash.move_to_trash([file_id])
+        await audit("files.delete", request, {"file_id": file_id, "name": item["name"], "moved": result["moved"]})
+        return res2.data({"trashed": file_id}, msg="已移入回收站", request=request)
 
     @router.post("/files/batch-delete")
     async def api_batch_delete(request: Request, body: dict = Body(...)):
         ids: List[int] = body.get("ids", []) or []
         if not ids:
             return res2.error("ids 不能为空", code=400, request=request)
-        result = await search.delete_files(ids)
-        await audit("files.batch_delete", request, {"count": result["deleted"]})
-        return res2.data(result, msg=f"已删除 {result['deleted']} 个文件", request=request)
+        result = await trash.move_to_trash(ids)
+        await audit("files.batch_delete", request, {"count": result["moved"], "missing": result["missing"]})
+        return res2.data(result, msg=f"已移入回收站 {result['moved']} 项", request=request)
+
+    # ==================================================================
+    # 回收站
+    # ==================================================================
+    @router.get("/trash/list")
+    async def api_trash_list(
+        request: Request,
+        root_id: Optional[int] = Query(None),
+        q: str = Query(""),
+        sort: str = Query("trashed_at"),
+        order: str = Query("desc"),
+        page: int = Query(1),
+        page_size: int = Query(300),
+    ):
+        return res2.data(
+            await trash.list_trash(root_id, q, sort, order, page, page_size),
+            request=request,
+        )
+
+    @router.post("/trash/restore")
+    async def api_trash_restore(request: Request, body: dict = Body(...)):
+        ids: List[int] = body.get("ids", []) or []
+        if not ids:
+            return res2.error("ids 不能为空", code=400, request=request)
+        result = await trash.restore(ids)
+        await audit("trash.restore", request, {"count": result["restored"]})
+        return res2.data(result, msg=f"已恢复 {result['restored']} 项", request=request)
+
+    @router.post("/trash/purge")
+    async def api_trash_purge(request: Request, body: dict = Body(...)):
+        ids: List[int] = body.get("ids", []) or []
+        if not ids:
+            return res2.error("ids 不能为空", code=400, request=request)
+        result = await trash.purge(ids)
+        await audit("trash.purge", request, {"count": result["purged"]})
+        return res2.data(result, msg=f"已彻底删除 {result['purged']} 项", request=request)
+
+    @router.post("/trash/empty")
+    async def api_trash_empty(request: Request, body: dict = Body(default={})):
+        result = await trash.empty()
+        await audit("trash.empty", request, {"count": result["purged"]})
+        return res2.data(result, msg=f"已清空回收站（{result['purged']} 项）", request=request)
 
     # ==================================================================
     # 文件系统浏览（实时读盘，不触发全量扫描）

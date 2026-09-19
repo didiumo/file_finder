@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _BASE_SELECT = """
 SELECT f.id, f.root_id, f.rel_path, f.name, f.parent_dir, f.ext,
-       f.size, f.mtime, f.is_dir, f.indexed_at,
+       f.size, f.mtime, f.is_dir, f.indexed_at, f.trashed,
        r.path AS root_path, r.display_name AS root_name,
        EXISTS(SELECT 1 FROM favorites fa
               WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path) AS favorite
@@ -66,7 +66,7 @@ class SearchLogic:
         after_path: Optional[str] = None,
         after_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        where: List[str] = []
+        where: List[str] = ["f.trashed = 0"]
         params: List[Any] = []
 
         q = (q or "").strip()
@@ -232,6 +232,7 @@ class SearchLogic:
             "root_path": row["root_path"],
             "root_name": row["root_name"],
             "favorite": bool(row["favorite"]),
+            "trashed": bool(row.get("trashed", 0)),
         }
 
     # ------------------------------------------------------------------
@@ -256,36 +257,8 @@ class SearchLogic:
 
     # ------------------------------------------------------------------
     # 删除
+    # （删除统一走回收站：物理移动到 <root>/.ff_trash/ + 标记 trashed，见 trash_logic）
     # ------------------------------------------------------------------
-    async def delete_files(self, ids: List[int]) -> Dict[str, Any]:
-        """删除文件（磁盘 + 索引 + 收藏快照）"""
-        deleted_disk = 0
-        missing = 0
-        for fid in ids:
-            item = await self.get_file(fid)
-            if not item or item["is_dir"]:
-                continue
-            await self._delete_one(item)
-            deleted_disk += 1
-        return {"deleted": deleted_disk, "missing": missing}
-
-    async def _delete_one(self, item: Dict[str, Any]):
-        """删除单个文件行对应的磁盘文件并清理索引/收藏"""
-        full_path = self._abs_path(item["root_path"], item["rel_path"])
-        if os.path.isfile(full_path):
-            try:
-                os.remove(full_path)
-            except OSError as e:
-                self.log.warning(f"删除磁盘文件失败 {full_path}: {e}")
-        await self.db.execute(
-            self.db_path,
-            "DELETE FROM favorites WHERE root_id=? AND rel_path=?",
-            (item["root_id"], item["rel_path"]),
-        )
-        await self.db.execute(
-            self.db_path, "DELETE FROM files WHERE id=?", (item["id"],)
-        )
-
     @staticmethod
     def _abs_path(root_path: str, rel_path: str) -> str:
         root = root_path.rstrip("\\/")
@@ -300,8 +273,8 @@ class SearchLogic:
             """
             SELECT r.id, r.path, r.display_name, r.enabled, r.last_scan_at,
                    r.last_scan_count, r.last_scan_elapsed,
-                   (SELECT COUNT(*) FROM files f WHERE f.root_id = r.id AND f.is_dir = 0) AS file_count,
-                   (SELECT COUNT(*) FROM files f WHERE f.root_id = r.id AND f.is_dir = 1) AS dir_count,
+                   (SELECT COUNT(*) FROM files f WHERE f.root_id = r.id AND f.is_dir = 0 AND f.trashed = 0) AS file_count,
+                   (SELECT COUNT(*) FROM files f WHERE f.root_id = r.id AND f.is_dir = 1 AND f.trashed = 0) AS dir_count,
                    (SELECT COUNT(*) FROM favorites fa WHERE fa.root_id = r.id) AS fav_count,
                    (SELECT COALESCE(SUM(f.size),0) FROM files f WHERE f.root_id = r.id AND f.is_dir = 0) AS total_size
             FROM roots r ORDER BY r.id
@@ -314,7 +287,7 @@ class SearchLogic:
             SELECT COUNT(*) AS files,
                    COALESCE(SUM(CASE WHEN is_dir=0 THEN size ELSE 0 END),0) AS bytes,
                    COUNT(DISTINCT root_id) AS roots
-            FROM files
+            FROM files WHERE trashed = 0
             """,
         )
         fav_row = await self.db.fetch_one(

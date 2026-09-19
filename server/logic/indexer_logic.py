@@ -131,19 +131,37 @@ class IndexerLogic:
         self.scan_workers = max(1, int(ctx.config.get("scan_workers", 8)))
         self.walk_queue_size = max(1000, int(ctx.config.get("walk_queue_size", 20000)))
         self.exclude_names = set(
-            str(x).strip() for x in (ctx.config.get("exclude_names", ["metadata"]) or []) if str(x).strip()
+            str(x).strip() for x in (ctx.config.get("exclude_names", ["metadata", ".ff_trash"]) or []) if str(x).strip()
         )
+        self.exclude_names.add(".ff_trash")  # 回收站目录永不参与索引
 
     # ------------------------------------------------------------------
     # 建表 / 初始化
     # ------------------------------------------------------------------
     async def init_db(self):
         for stmt in _SCHEMA_STATEMENTS:
-            s = stmt.strip()
-            if s:
-                await self.db.execute(self.db_path, s)
+            st = stmt.strip()
+            if st:
+                await self.db.execute(self.db_path, st)
+        await self._ensure_trash_columns()
         await self._sync_fts_backfill()
         self.log.info("file_finder 数据库表结构已就绪")
+
+    async def _ensure_trash_columns(self):
+        """幂等迁移：files 表加回收站标记列（trashed / trashed_at）"""
+        cols = await self.db.fetch_all(self.db_path, "PRAGMA table_info(files)")
+        names = {c["name"] for c in cols}
+        if "trashed" not in names:
+            await self.db.execute(
+                self.db_path, "ALTER TABLE files ADD COLUMN trashed INTEGER NOT NULL DEFAULT 0"
+            )
+            await self.db.execute(
+                self.db_path, "ALTER TABLE files ADD COLUMN trashed_at REAL NOT NULL DEFAULT 0"
+            )
+            await self.db.execute(
+                self.db_path, "CREATE INDEX IF NOT EXISTS idx_files_trashed ON files(trashed, trashed_at)"
+            )
+            self.log.info("files 表已迁移：新增 trashed / trashed_at 列（回收站）")
 
     async def _sync_fts_backfill(self):
         """FTS 与 files 行数不一致 / 索引异常时重建（首次升级、意外漂移、损坏兜底）"""
@@ -536,9 +554,10 @@ class IndexerLogic:
                     changed,
                 )
             # 删除磁盘上已不存在的行（增量同步的核心价值：不重扫也能保持准确）
+            # 注意：回收站条目（trashed=1）物理位置已移到 .ff_trash，不作为“缺失”删除
             missing_ids = []
             for rel, old in existing.items():
-                if rel not in collected:
+                if rel not in collected and not old[4]:
                     missing_ids.append(old[0])
             if missing_ids:
                 for i in range(0, len(missing_ids), 2000):
@@ -555,11 +574,11 @@ class IndexerLogic:
             )
         self.log.info(f"索引写入完成 mode={mode} 新增={inserted} 更新={updated} 删除={deleted}")
 
-    async def _load_existing(self, root_id: int) -> Dict[str, Tuple[int, int, float, int]]:
-        """加载指定根目录现有索引: rel_path -> (id, size, mtime, is_dir)"""
+    async def _load_existing(self, root_id: int) -> Dict[str, Tuple[int, int, float, int, int]]:
+        """加载指定根目录现有索引: rel_path -> (id, size, mtime, is_dir, trashed)"""
         rows = await self.db.fetch_all(
             self.db_path,
-            "SELECT id, rel_path, size, mtime, is_dir FROM files WHERE root_id=?",
+            "SELECT id, rel_path, size, mtime, is_dir, trashed FROM files WHERE root_id=?",
             (root_id,),
         )
-        return {r["rel_path"]: (r["id"], r["size"], r["mtime"], r["is_dir"]) for r in rows}
+        return {r["rel_path"]: (r["id"], r["size"], r["mtime"], r["is_dir"], r["trashed"]) for r in rows}

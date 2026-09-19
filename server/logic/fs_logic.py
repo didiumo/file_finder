@@ -18,10 +18,11 @@ class FsLogic:
         self.db = ctx.plugins["db_v2"]
         self.db_path = str(ctx.data.get_path("file_finder.db"))
         self.log = ctx.plugins["logger"].get_logger(ctx.service_name)
-        # 与扫描器保持一致：排除目录（如记录数据 metadata）在浏览时不展示、不可进入
+        # 与扫描器保持一致：排除目录（如记录数据 metadata、回收站 .ff_trash）在浏览时不展示、不可进入
         self.exclude_names = set(
-            str(x).strip() for x in (ctx.config.get("exclude_names", ["metadata"]) or []) if str(x).strip()
+            str(x).strip() for x in (ctx.config.get("exclude_names", ["metadata", ".ff_trash"]) or []) if str(x).strip()
         )
+        self.exclude_names.add(".ff_trash")
 
     # ------------------------------------------------------------------
     # 路径护栏

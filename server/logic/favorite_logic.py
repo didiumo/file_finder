@@ -16,7 +16,7 @@ SELECT fa.id AS fav_id, fa.root_id, fa.rel_path, fa.name, fa.ext,
        fa.size AS fav_size, fa.mtime AS fav_mtime, fa.created_at,
        r.path AS root_path, r.display_name AS root_name,
        f.id AS file_id,
-       CASE WHEN f.id IS NULL THEN 0 ELSE 1 END AS exists_now,
+       CASE WHEN f.id IS NULL OR COALESCE(f.trashed, 0) = 1 THEN 0 ELSE 1 END AS exists_now,
        COALESCE(f.size, fa.size) AS size,
        COALESCE(f.mtime, fa.mtime) AS mtime
 FROM favorites fa
@@ -153,7 +153,7 @@ class FavoriteLogic:
                     where.append(f"fa.ext IN ({','.join('?' * len(exts))})")
                     params.extend(exts)
         if only_exists is True:
-            where.append("f.id IS NOT NULL")
+            where.append("f.id IS NOT NULL AND COALESCE(f.trashed, 0) = 0")
         elif only_exists is False:
             where.append("f.id IS NULL")
 

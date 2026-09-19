@@ -43,10 +43,11 @@ ok = True
 sb = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_sandbox.py")
 subprocess.run([sys.executable, sb], check=True, capture_output=True)
 
-# 0b. 清理历史收藏（保证幂等）
+# 0b. 清理历史收藏 + 清空回收站（保证幂等）
 st, old_favs = req("GET", "/favorites?page_size=1000")
 for f in old_favs["data"]["items"]:
     req("DELETE", f"/favorites/{f['fav_id']}")
+req("POST", "/trash/empty", {})
 
 # 1. 扫描沙箱
 st, r = req("POST", "/roots/3/scan", {"mode": "incremental"})
@@ -109,12 +110,17 @@ st, fav = req("GET", "/favorites")
 ok &= check("favorites list=2", fav["data"]["total"] == 2, f"total={fav['data']['total']}")
 ok &= check("favorite card fields", all(k in fav["data"]["items"][0] for k in ("name", "size", "mtime", "exists_now")))
 
-# 7. 删除文件（显式删除会同时移除其收藏快照）
+# 7. 删除文件 → 回收站（显式删除会同时移除其收藏快照）
 st, r = req("POST", "/favorites/toggle", {"file_id": files["data.json"]["id"]})
 st, r = req("DELETE", "/files/" + str(files["data.json"]["id"]))
-ok &= check("delete file", r["data"]["deleted"] == files["data.json"]["id"])
+ok &= check("delete to trash", r["data"]["trashed"] == files["data.json"]["id"], f"body={r}")
 disk_path = os.path.join(os.environ["TEMP"], "ff_sandbox", "data.json")
-ok &= check("deleted from disk", not os.path.exists(disk_path))
+ok &= check("moved from disk", not os.path.exists(disk_path))
+trash_path = os.path.join(os.environ["TEMP"], "ff_sandbox", ".ff_trash", "data.json")
+ok &= check("in .ff_trash", os.path.exists(trash_path))
+st, tr = req("GET", "/trash/list")
+ok &= check("trash has it", any(i["name"] == "data.json" for i in tr["data"]["items"]),
+            f"total={tr['data'].get('total')}")
 st, fav = req("GET", "/favorites?q=data.json")
 ok &= check("favorite removed with explicit delete", fav["data"]["total"] == 0,
             f"total={fav['data']['total']}")

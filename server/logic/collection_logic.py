@@ -293,13 +293,14 @@ class CollectionLogic:
             candidates.append((rid, rel, row["size"]))
 
         if task:
-            await task.update(percent=40, stage=f"开始删除非收藏文件（共 {len(candidates)} 个）",
+            await task.update(percent=40, stage=f"开始移入回收站（共 {len(candidates)} 个）",
                               current=0, total=max(1, len(candidates)))
 
         errors: List[str] = []
         lock = threading.Lock()
         # 预计算每个根的 realpath，避免每删一个文件都做一次网络 realpath
         real_roots = {rid: os.path.realpath(r["path"]).rstrip("\\/") for rid, r in root_by_id.items()}
+        trash_dir = ".ff_trash"
 
         def _unlink_worker(work: List[Tuple[int, str, int]]) -> int:
             n = 0
@@ -312,16 +313,22 @@ class CollectionLogic:
                     continue
                 try:
                     if os.path.isfile(full) and not os.path.islink(full):
-                        os.remove(full)
+                        # 删除统一先进回收站：移动到 <root>/.ff_trash/<rel_path>
+                        dst = os.path.join(root_by_id[rid]["path"].rstrip("\\/"), trash_dir, *rel.split("/"))
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        if os.path.lexists(dst):
+                            base, ext = os.path.splitext(dst)
+                            dst = f"{base}~{int(time.time())}{ext}"
+                        shutil.move(full, dst)
                         n += 1
                         with lock:
                             summary["deleted_bytes"] = summary.get("deleted_bytes", 0) + size
                 except OSError as e:
                     with lock:
-                        errors.append(f"删除失败 {full}: {e}")
+                        errors.append(f"移动失败 {full}: {e}")
             return n
 
-        # 并行删除（分片）
+        # 并行移动（分片）
         chunk_size = max(1, len(candidates) // self.cleanup_workers)
         chunks = [candidates[i:i + chunk_size] for i in range(0, len(candidates), chunk_size)] or [[]]
         loop = asyncio.get_running_loop()
@@ -332,9 +339,29 @@ class CollectionLogic:
                 done_cnt += fut.result()
                 if task:
                     await task.update(percent=40 + int(done_cnt / max(1, len(candidates)) * 40),
-                                      current=done_cnt, stage=f"删除文件 {done_cnt}/{len(candidates)}")
+                                      current=done_cnt, stage=f"移入回收站 {done_cnt}/{len(candidates)}")
         summary["deleted"] = done_cnt
         summary["errors"].extend(errors[:50])
+
+        # 标记回收（批量）：物理位置已变化，索引标记 trashed 后搜索/预览不可见
+        now = time.time()
+        actual_moved: List[Tuple[int, str]] = []
+        for rid, rel, _size in candidates:
+            src = os.path.join(root_by_id[rid]["path"].rstrip("\\/"), *rel.split("/"))
+            if not os.path.lexists(src):  # 原位置已不存在 → 已移入回收站
+                actual_moved.append((rid, rel))
+        if actual_moved:
+            await self.db.execute_many(
+                self.db_path,
+                "UPDATE files SET trashed=1, trashed_at=? WHERE root_id=? AND rel_path=?",
+                [(now, rid, rel) for rid, rel in actual_moved],
+            )
+            # 移除收藏快照（保留清单跟随删除语义）
+            for rid, rel in actual_moved:
+                await self.db.execute(
+                    self.db_path, "DELETE FROM favorites WHERE root_id=? AND rel_path=?",
+                    (rid, rel),
+                )
 
         # 移除空目录（自底向上）
         removed_dirs = 0
