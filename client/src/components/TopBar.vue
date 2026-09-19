@@ -28,7 +28,7 @@
     <div class="filters">
       <select v-model="store.rootId" class="sel" title="扫描根" @change="onFilterChange">
         <option :value="null">全部根目录</option>
-        <option v-for="r in store.roots" :key="r.id" :value="r.id">{{ r.display_name || r.path }}</option>
+        <option v-for="r in store.roots" :key="r.id" :value="r.id" :title="r.path">{{ r.display_name || r.path }}</option>
       </select>
 
       <select v-model="store.ext" class="sel" title="扩展名过滤" @change="onFilterChange">

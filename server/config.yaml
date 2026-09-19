@@ -23,6 +23,11 @@ collection_dir: "collected"
 # 缩略图缓存子目录（相对服务 data 目录）
 thumb_dir: "thumbs"
 
+# 扫描时跳过的目录名（整个子树不索引、不显示、不参与搜索）。
+# 默认跳过 metadata —— 它是程序生成的记录数据（配置文件里的历史记录），用户不需要在工具里看到。
+exclude_names:
+  - metadata
+
 # 待扫描的局域网共享根目录（首次启动自动写入数据库，之后可在界面增删）
 roots:
   - '\\Desktop-lt9c0uj\d\MJRelease\SimulatorApp_Data\mj'

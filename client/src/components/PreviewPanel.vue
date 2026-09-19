@@ -40,12 +40,22 @@
         <!-- 图片 -->
         <template v-else-if="kind === 'image'">
           <div class="img-wrap">
-            <img :src="previewUrl" alt="" />
+            <img v-if="!mediaFailed" :src="previewUrl" alt="" @error="mediaFailed = true" />
+            <div v-else class="unsupported">
+              <Icon name="warn" :size="52" style="color:#d9a53f" />
+              <p>文件已丢失或不可访问</p>
+              <p class="ext">缩略图/预览加载失败（{{ item.name }}）</p>
+            </div>
           </div>
         </template>
         <!-- 视频 -->
         <template v-else-if="kind === 'video'">
-          <video :src="previewUrl" controls autoplay playsinline class="video"></video>
+          <video v-if="!mediaFailed" :src="previewUrl" controls autoplay playsinline class="video" @error="mediaFailed = true"></video>
+          <div v-else class="unsupported">
+            <Icon name="warn" :size="52" style="color:#d9a53f" />
+            <p>文件已丢失或不可访问</p>
+            <p class="ext">视频加载失败（{{ item.name }}）</p>
+          </div>
         </template>
         <!-- 不支持 -->
         <template v-else>
@@ -80,6 +90,7 @@ const truncated = ref(false)
 const truncLen = ref(0)
 const isFav = ref(false)
 const loading = ref(false)
+const mediaFailed = ref(false)
 let controller = null
 
 const emit = defineEmits(['deleted'])
@@ -98,6 +109,7 @@ watch(() => store.previewKey, async () => {
   const it = item.value
   if (!it || !it.id) return
   isFav.value = !!it.favorite
+  mediaFailed.value = false
   const k = classifyExt(it.ext)
   loading.value = true
   textContent.value = ''

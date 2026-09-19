@@ -66,7 +66,8 @@ const roots = computed(() => store.roots)
 
 async function refresh() {
   const r = await apiRoots.list()
-  store.roots = r.data.roots
+  const rs = r?.data
+  store.roots = Array.isArray(rs) ? rs : (rs?.roots || [])
 }
 async function addRoot() {
   const p = newPath.value.trim()

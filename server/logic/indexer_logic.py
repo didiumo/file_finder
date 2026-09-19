@@ -130,6 +130,9 @@ class IndexerLogic:
         self.log = ctx.plugins["logger"].get_logger(ctx.service_name)
         self.scan_workers = max(1, int(ctx.config.get("scan_workers", 8)))
         self.walk_queue_size = max(1000, int(ctx.config.get("walk_queue_size", 20000)))
+        self.exclude_names = set(
+            str(x).strip() for x in (ctx.config.get("exclude_names", ["metadata"]) or []) if str(x).strip()
+        )
 
     # ------------------------------------------------------------------
     # 建表 / 初始化
@@ -394,7 +397,12 @@ class IndexerLogic:
                                 if e.is_symlink():
                                     continue  # 跳过链接，防环
                                 if e.is_dir(follow_symlinks=False):
-                                    subdirs.append((e.path, e.name))
+                                    # 跳过排除目录（如记录数据 metadata），其子树整体不索引
+                                    if e.name in self.exclude_names:
+                                        continue
+                                    subdirs.append(
+                                        (e.path, f"{rel_dir}/{e.name}" if rel_dir else e.name)
+                                    )
                                 elif e.is_file(follow_symlinks=False):
                                     try:
                                         st = e.stat(follow_symlinks=False)
@@ -462,7 +470,8 @@ class IndexerLogic:
         processed_since_yield = 0
 
         if mode == "full":
-            await self.db.execute(self.db_path, "DELETE FROM files WHERE root_id=?", (root_id,))
+            rc = await self.db.execute(self.db_path, "DELETE FROM files WHERE root_id=?", (root_id,))
+            self.log.info(f"full 扫描已清空旧索引 root_id={root_id} 行数={rc}")
         else:
             existing = await self._load_existing(root_id)
             changed = []  # (id, new_size, new_mtime, new_indexed_at)
@@ -544,6 +553,7 @@ class IndexerLogic:
                 current=stats["files"], total=stats["files"],
                 percent=95, stage=f"写入数据库完成（新增 {inserted} / 更新 {updated} / 删除 {deleted}）",
             )
+        self.log.info(f"索引写入完成 mode={mode} 新增={inserted} 更新={updated} 删除={deleted}")
 
     async def _load_existing(self, root_id: int) -> Dict[str, Tuple[int, int, float, int]]:
         """加载指定根目录现有索引: rel_path -> (id, size, mtime, is_dir)"""

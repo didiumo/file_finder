@@ -7,6 +7,25 @@
       @open-roots="showRoots = true"
     />
 
+    <!-- 当前扫描根信息条（完整路径 + 索引状态，解决“不知道扫的是哪个路径”） -->
+    <div class="rootstrip" v-if="currentRoot">
+      <span class="rs-label">扫描根</span>
+      <span class="rs-path" :title="currentRoot.path">{{ currentRoot.path }}</span>
+      <span class="rs-sep">·</span>
+      <span class="rs-stat">{{ formatCount(currentRoot.file_count) }} 文件 / {{ formatCount(currentRoot.dir_count) }} 目录</span>
+      <span class="rs-sep">·</span>
+      <span v-if="currentRoot.last_scan_at" class="rs-stat">上次扫描 {{ formatDate(currentRoot.last_scan_at) }}</span>
+      <span v-else class="rs-stat rs-never">未扫描</span>
+      <span v-if="currentRoot.last_scan_status === 'running'" class="rs-running">扫描中…</span>
+      <span v-else-if="currentRoot.last_scan_status === 'failed'" class="rs-bad">上次扫描失败</span>
+      <span v-if="currentRoot.enabled === false" class="rs-bad">已停用</span>
+    </div>
+    <div class="rootstrip" v-else-if="store.roots && store.roots.length">
+      <span class="rs-label">扫描根</span>
+      <span class="rs-path muted">全部根目录（{{ store.roots.length }} 个），当前显示默认根</span>
+      <button class="rs-btn" @click="showRoots = true">查看/管理</button>
+    </div>
+
     <div class="main">
       <div class="list-area">
         <VirtualList
@@ -117,6 +136,17 @@ const cfg = computed(() => viewCfg())
 const isTable = computed(() => store.viewMode === 'table')
 const activeTotal = computed(() => (store.tab === 'favorites' ? store.favTotal : store.searchTotal))
 const loadedCount = computed(() => Math.min(loadedPages.value * pageSize, activeTotal.value))
+const currentRoot = computed(() => {
+  const rs = store.roots || []
+  if (store.rootId) return rs.find(r => r.id === store.rootId) || null
+  return rs[0] || null
+})
+
+function formatCount(n) {
+  n = n || 0
+  if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + '万'
+  return n.toLocaleString()
+}
 
 /* ---------- 数据装配 ---------- */
 
@@ -240,8 +270,13 @@ function onEsc() {
 async function init() {
   try {
     const [roots, stats] = await Promise.all([apiRoots.list(), apiStats()])
-    store.roots = roots.data.roots
-    store.stats = stats.data
+    const rs = roots?.data
+    store.roots = Array.isArray(rs) ? rs : (rs?.roots || [])
+    store.stats = stats?.data
+    // 默认选中第一个扫描根（用户只关心指定目录），信息条即显示完整路径
+    if (store.rootId == null && store.roots.length) {
+      store.rootId = store.roots[0].id
+    }
   } catch (e) {
     console.error('初始化失败', e)
   }
@@ -280,6 +315,34 @@ html, body, #app {
 .app { height: 100vh; display: flex; flex-direction: column; }
 .main { flex: 1; display: flex; min-height: 0; }
 .list-area { flex: 1; position: relative; min-width: 0; }
+
+/* 扫描根信息条 */
+.rootstrip {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 12px; background: #17191c;
+  border-bottom: 1px solid #2e3137;
+  font-size: 11.5px; color: #8b919a;
+  flex-wrap: wrap;
+}
+.rs-label {
+  color: #5f6474; font-weight: 600;
+  background: #26282d; border-radius: 4px; padding: 1px 7px;
+}
+.rs-path {
+  font-family: Consolas, monospace; color: #aab0b8;
+  max-width: 620px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rs-path.muted { color: #6c727c; font-family: inherit; }
+.rs-sep { color: #3a3d44; }
+.rs-stat { color: #8b919a; }
+.rs-never { color: #d9a53f; }
+.rs-running { color: #6ab0ff; }
+.rs-bad { color: #e05c5c; }
+.rs-btn {
+  background: #26282d; border: 1px solid #33363d; color: #9aa0a6;
+  border-radius: 5px; padding: 1px 8px; font-size: 11px; cursor: pointer;
+}
+.rs-btn:hover { color: #e3e6eb; }
 
 /* 表格行 */
 .trow {
