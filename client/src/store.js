@@ -42,7 +42,7 @@ export const store = reactive({
   trashTotal: 0,            // 回收站条目数
   showPreview: true,
   previewKey: 0,            // 选中项变化时自增，驱动预览面板刷新
-  previewWidth: 380,        // 预览面板宽度（可拖拽拉伸）
+  previewWidth: typeof saved.previewWidth === 'number' ? saved.previewWidth : 380,  // 预览面板宽度（可拖拽拉伸，持久化）
   tasks: [],                // 活跃任务（含进度）
 
   // 文件系统浏览（类资源管理器）
@@ -77,6 +77,7 @@ export function persistFilters() {
       tab: store.tab, viewMode: store.viewMode, q: store.q, regex: store.regex,
       rootId: store.rootId, ext: store.ext, favOnly: store.favOnly, hideFav: store.hideFav,
       sort: store.sort, order: store.order,
+      previewWidth: store.previewWidth,
       fsRootId: store.fsRoot ? store.fsRoot.id : null, fsRel: store.fsRel,
     }))
   } catch { /* noop */ }

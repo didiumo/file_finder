@@ -101,7 +101,7 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import Icon from './Icon.vue'
-import { store } from '../store'
+import { store, persistFilters } from '../store'
 import { formatSize, formatDate } from '../utils/format'
 import { classifyExt, fileIcon, fileColor } from '../utils/fileTypes'
 import { apiFiles, apiFavorites, fetchTextPreview } from '../api'
@@ -216,6 +216,7 @@ function stopResize() {
   document.body.style.userSelect = ''
   window.removeEventListener('mousemove', onResize)
   window.removeEventListener('mouseup', stopResize)
+  persistFilters()   // 拖拽结束：宽度持久化（ff_filters.previewWidth）
 }
 
 onBeforeUnmount(() => { controller && controller.abort() })
