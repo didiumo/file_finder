@@ -798,12 +798,18 @@ onMounted(() => {
 onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 
 function onGlobalKey(e) {
+  // 焦点在输入控件内时不拦截：搜索框/输入框打字、退格、删除字符不受影响
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
   if (e.key === 'Escape') {
+    if (confirmBox.value) { confirmCancel(); return }
     if (ctxMenu.value) { ctxMenu.value = null; return }
     onEsc()
     return
   }
+  // 搜索 / 收藏 / 文件系统界面：Delete 键批量移入回收站（高频无确认）
   if (e.key === 'Delete' && selKeys.value.size && store.tab !== 'trash') {
+    e.preventDefault()
     batchDelete()
   }
 }
