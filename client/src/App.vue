@@ -187,7 +187,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount , nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount , nextTick } from 'vue'
 import TopBar from './components/TopBar.vue'
 import VirtualList from './components/VirtualList.vue'
 import FileCard from './components/FileCard.vue'
@@ -878,6 +878,19 @@ async function init() {
     // 默认选中第一个扫描根（用户只关心指定目录），信息条即显示完整路径
     if (store.rootId == null && store.roots.length) {
       store.rootId = store.roots[0].id
+    } else if (store.rootId != null && !store.roots.some(r => r.id === store.rootId)) {
+      store.rootId = store.roots.length ? store.roots[0].id : null  // 持久化的根已失效 → 重置
+    }
+    // 恢复文件系统浏览位置（浏览根 + 目录）
+    let savedFsId = null, savedFsRel = ''
+    try {
+      const o = JSON.parse(localStorage.getItem('ff_filters') || '{}')
+      savedFsId = o && o.fsRootId != null ? o.fsRootId : null
+      savedFsRel = o && typeof o.fsRel === 'string' ? o.fsRel : ''
+    } catch { /* noop */ }
+    if (savedFsId != null) {
+      const r = store.roots.find(x => x.id === savedFsId)
+      if (r) { store.fsRoot = r; store.fsRel = savedFsRel }
     }
   } catch (e) {
     console.error('初始化失败', e)
@@ -885,11 +898,46 @@ async function init() {
   initialLoading.value = false
 }
 
+/* ---------- Tab 独立 hash 路由：刷新/后退停留在原界面 ---------- */
+const TAB_HASH = { search: '#/search', fs: '#/fs', favorites: '#/favorites', trash: '#/trash' }
+function tabFromHash() {
+  const h = location.hash
+  if (h.startsWith('#/')) {
+    const t = h.slice(2)
+    if (['search', 'fs', 'favorites', 'trash'].includes(t)) return t
+  }
+  return null
+}
+function onHashChange() {
+  const t = tabFromHash()
+  if (t && t !== store.tab) {
+    store.tab = t
+    onFilterChange()
+  }
+}
+// URL hash 优先于 localStorage 恢复的 tab；无 hash 时把恢复的 tab 写回 URL
+const hTab = tabFromHash()
+if (hTab) store.tab = hTab
+else if (TAB_HASH[store.tab]) {
+  try { history.replaceState(null, '', TAB_HASH[store.tab]) } catch { /* noop */ }
+}
+// tab 切换时同步 URL hash（replaceState 不产生历史记录、不触发 hashchange）
+watch(() => store.tab, (t) => {
+  const h = TAB_HASH[t]
+  if (h && location.hash !== h) {
+    try { history.replaceState(null, '', h) } catch { /* noop */ }
+  }
+})
+
 onMounted(() => {
   init()
   window.addEventListener('keydown', onGlobalKey)
+  window.addEventListener('hashchange', onHashChange)
 })
-onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKey)
+  window.removeEventListener('hashchange', onHashChange)
+})
 
 function onGlobalKey(e) {
   // 焦点在输入控件内时不拦截：搜索框/输入框打字、退格、删除字符不受影响
