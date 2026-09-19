@@ -52,6 +52,7 @@ class SearchLogic:
         date_from: Optional[float] = None,
         date_to: Optional[float] = None,
         fav_only: bool = False,
+        hide_fav: bool = False,
         include_dirs: bool = True,
         regex: bool = False,
         prefix: Optional[str] = None,
@@ -123,6 +124,8 @@ class SearchLogic:
             params.append(date_to)
         if fav_only:
             where.append("EXISTS(SELECT 1 FROM favorites fa WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path)")
+        if hide_fav:
+            where.append("NOT EXISTS(SELECT 1 FROM favorites fa WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path)")
 
         page = max(1, int(page))
         page_size = max(1, min(2000, int(page_size)))

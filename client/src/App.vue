@@ -348,6 +348,7 @@ function searchParams(page, cursor) {
     regex: store.regex ? 1 : null,
     ext: store.ext,
     fav_only: store.favOnly ? 1 : null,
+    hide_fav: store.hideFav ? 1 : null,
     sort: store.sort,
     order: store.order,
     page,

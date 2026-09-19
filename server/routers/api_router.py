@@ -107,6 +107,7 @@ async def setup_api_router(ctx) -> APIRouter:
         date_from: Optional[float] = Query(None),
         date_to: Optional[float] = Query(None),
         fav_only: bool = Query(False),
+        hide_fav: bool = Query(False),
         include_dirs: bool = Query(True),
         regex: bool = Query(False),
         prefix: Optional[str] = Query(None),
@@ -124,7 +125,7 @@ async def setup_api_router(ctx) -> APIRouter:
         try:
             result = await search.search(
                 q, root_id, ext, size_min, size_max, date_from, date_to,
-                fav_only, include_dirs, regex, prefix, sort, order, page, page_size,
+                fav_only, hide_fav, include_dirs, regex, prefix, sort, order, page, page_size,
                 after_name, after_size, after_mtime, after_id,
             )
         except ValueError as e:

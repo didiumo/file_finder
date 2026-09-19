@@ -89,6 +89,10 @@
         <input type="checkbox" v-model="store.favOnly" @change="onFilterChange" />
         <Icon name="star" :size="12" /> 仅收藏
       </label>
+      <label v-if="store.tab === 'search'" class="chk" title="隐藏已收藏（本次会话新收藏的项在下次刷新页面后才被过滤）">
+        <input type="checkbox" :checked="store.hideFav" @change="onHideFav" />
+        隐藏已收藏
+      </label>
     </div>
 
     <div v-if="store.tab === 'fs'" class="filters">
@@ -114,7 +118,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import Icon from './Icon.vue'
-import { store } from '../store'
+import { store, setHideFav } from '../store'
 
 const emit = defineEmits(['filter-change', 'refresh', 'open-roots'])
 
@@ -163,6 +167,10 @@ function clearScope() {
   emit('filter-change')
 }
 function onFilterChange() { emit('filter-change') }
+function onHideFav(e) {
+  setHideFav(e.target.checked)
+  emit('filter-change')
+}
 function toggleOrder() {
   store.order = store.order === 'asc' ? 'desc' : 'asc'
   emit('filter-change')

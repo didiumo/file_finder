@@ -15,6 +15,8 @@ export const store = reactive({
   rootId: null,             // null = 全部根
   ext: '',                  // '' = 全部扩展名
   favOnly: false,
+  // 隐藏已收藏（搜索时排除已收藏项；勾选状态 localStorage 持久化，刷新后仍生效）
+  hideFav: (() => { try { return localStorage.getItem('ff_hide_fav') === '1' } catch { return false } })(),
   sort: 'name',             // name | size | mtime
   order: 'asc',             // asc | desc
 
@@ -48,6 +50,11 @@ export const tableCols = reactive({
 })
 export function saveTableCols() {
   try { localStorage.setItem('ff_tableCols', JSON.stringify({ ...tableCols })) } catch { /* noop */ }
+}
+
+export function setHideFav(v) {
+  store.hideFav = !!v
+  try { localStorage.setItem('ff_hide_fav', store.hideFav ? '1' : '0') } catch { /* noop */ }
 }
 
 export const viewCfg = () => VIEW_MODES[store.viewMode] || VIEW_MODES.medium
