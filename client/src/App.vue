@@ -838,8 +838,10 @@ async function onToggleFav(item) {
   item.favorite = r.data.favorite
   if (r.data.favorite) store.favTotal++
   else store.favTotal = Math.max(0, store.favTotal - 1)
-  // 列表数据是非响应式 Map：就地更新 favorite 后需强制重渲染，星标才会即时出现
-  if (listRef.value) listRef.value.bump()
+  // 列表数据是非响应式 Map：按引用替换条目对象 → :item 引用变化 → 卡片组件重新渲染（星标即时）
+  if (listRef.value && !listRef.value.patchItemByRef(item, { favorite: r.data.favorite })) {
+    listRef.value.bump() // 该页已释放未命中 → 兜底轻量重渲染
+  }
 }
 
 async function pruneMissing() {

@@ -203,9 +203,22 @@ function reset() {
   inflight.clear()
   version.value++
 }
-// 轻量重渲染：数据不变但强制重算可视单元格（用于 item 属性就地更新后的星标等反馈）
+// 轻量重渲染：数据不变但强制重算可视单元格
 function bump() {
   version.value++
+}
+// 就地替换某个条目对象（按引用查找）：替换后 version++ 触发重渲染，
+// slot 中 :item 引用变化 → 子组件（FileCard）props 变化才会重新渲染
+function patchItemByRef(target, patch) {
+  for (const list of pages.values()) {
+    const i = list.findIndex(it => it === target)
+    if (i >= 0) {
+      list[i] = { ...list[i], ...patch }
+      version.value++
+      return true
+    }
+  }
+  return false
 }
 function getScrollTop() {
   return viewportEl.value ? viewportEl.value.scrollTop : 0
@@ -239,7 +252,7 @@ watch(() => props.total, () => { version.value++ })
 function getCells() {
   return [...cellRefs.values()].filter(c => c.el && c.item)
 }
-defineExpose({ reset, bump, pages, scrollTo, getScrollTop, getCells, removeAndRefresh, clearAll })
+defineExpose({ reset, bump, patchItemByRef, pages, scrollTo, getScrollTop, getCells, removeAndRefresh, clearAll })
 </script>
 
 <style scoped>
