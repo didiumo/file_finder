@@ -130,7 +130,7 @@
           <span class="st-spacer"></span>
           <span v-if="deleting" class="st-item del-prog">
             <span class="del-bar"><i :style="{ width: deleting.total ? (deleting.done / deleting.total * 100) + '%' : '0%' }"></i></span>
-            正在删除 <b>{{ deleting.done }}</b> / {{ deleting.total }}
+            正在删除 <b>{{ deleting.done }}</b> / {{ deleting.total }}（{{ deleting.total ? Math.round(deleting.done / deleting.total * 100) : 0 }}%）
           </span>
           <template v-if="selCount && store.tab !== 'trash'">
             <button class="st-btn" @click="batchFav" :title="batchFavTitle">
@@ -736,8 +736,9 @@ async function batchDelete() {
     alert(`${items.length - withId.length} 项未索引，无法删除；将删除其余 ${withId.length} 项`)
   }
   markKeepPos()
-  // 移入回收站可随时恢复，不做二次确认（高频操作）。分批删除并回显进度
-  const BATCH = 100
+  // 移入回收站可随时恢复，不做二次确认（高频操作）。分批删除并回显进度：
+  // 批次取小（20 个）且每批后 await nextTick 强制渲染，进度条平滑推进而非 0→100
+  const BATCH = 20
   const ids = withId.map(i => i.id)
   deleting.value = { done: 0, total: ids.length }
   let moved = 0
@@ -747,6 +748,7 @@ async function batchDelete() {
       const chunk = ids.slice(i, i + BATCH)
       const r = await apiFiles.batchDelete(chunk)
       deleting.value.done = Math.min(ids.length, i + chunk.length)
+      await nextTick()
       moved += r.data?.moved || 0
       errs.push(...(r.data?.errors || []))
     }
