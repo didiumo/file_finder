@@ -6,6 +6,7 @@
     :title="item ? item.rel_path : ''"
     @click="onClick"
     @dblclick="onDblClick"
+    @contextmenu.prevent="$emit('ctx', $event)"
   >
     <div class="thumb">
       <template v-if="item">
@@ -46,7 +47,7 @@ const props = defineProps({
   mode: { type: String, default: 'medium' },
   selected: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'fav', 'dbl'])
+const emit = defineEmits(['select', 'fav', 'dbl', 'ctx'])
 
 const imgError = ref(false)
 const isVideo = computed(() => props.item && classifyExt(props.item.ext) === 'video')
@@ -65,11 +66,8 @@ const thumbUrl = computed(() => {
 
 function onClick(e) {
   if (!props.item) return
-  if (e.altKey || e.ctrlKey || e.metaKey) {
-    emit('fav', props.item)
-    return
-  }
-  emit('select', props.item)
+  // Ctrl/Cmd/Shift 均交给多选逻辑（原 Ctrl=收藏 改为右键菜单收藏）
+  emit('select', props.item, e)
 }
 function onDblClick(e) {
   if (!props.item || e.altKey || e.ctrlKey || e.metaKey) return

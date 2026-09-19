@@ -8,7 +8,7 @@ export const VIEW_MODES = {
 }
 
 export const store = reactive({
-  tab: 'search',            // 'search' | 'favorites' | 'fs'（文件系统浏览）
+  tab: 'search',            // 'search' | 'favorites' | 'fs'（文件系统浏览） | 'trash'（回收站）
   viewMode: 'medium',       // 'small' | 'medium' | 'large' | 'table'
   q: '',
   regex: false,             // 正则表达式搜索开关
@@ -24,6 +24,7 @@ export const store = reactive({
   searchTotal: 0,
   favTotal: 0,
   fsTotal: 0,               // 文件系统当前目录条目数
+  trashTotal: 0,            // 回收站条目数
   showPreview: true,
   previewKey: 0,            // 选中项变化时自增，驱动预览面板刷新
   previewWidth: 380,        // 预览面板宽度（可拖拽拉伸）

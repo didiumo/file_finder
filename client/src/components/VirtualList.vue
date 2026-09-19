@@ -13,6 +13,7 @@ VirtualList 虚拟滚动 + 分页窗口引擎（性能核心）
         :key="cell.index"
         class="vl-cell"
         :style="cellStyle(cell)"
+        :ref="(el) => trackCell(el, cell)"
       >
         <slot name="item" :item="cell.item" :index="cell.index" :row="cell.row" :col="cell.col" :loading="!cell.item"></slot>
       </div>
@@ -44,6 +45,12 @@ const version = ref(0)
 
 const pages = new Map()       // pageIndex -> items[]
 const inflight = new Map()    // pageIndex -> Promise
+const cellRefs = new Map()    // cell.index -> { el, item }（框选 / 范围选择用，随渲染实时更新）
+
+function trackCell(el, cell) {
+  if (el) cellRefs.set(cell.index, { el, item: cell.item })
+  else cellRefs.delete(cell.index)
+}
 
 const cols = computed(() => (props.grid ? Math.max(1, Math.floor(viewportW.value / props.colWidth)) : 1))
 const rows = computed(() => Math.ceil(Math.max(0, props.total) / cols.value))
@@ -147,7 +154,10 @@ onMounted(() => {
 onBeforeUnmount(() => { ro && ro.disconnect() })
 
 watch(() => props.total, () => { version.value++ })
-defineExpose({ reset, pages, scrollTo: (y) => { if (viewportEl.value) viewportEl.value.scrollTop = y } })
+function getCells() {
+  return [...cellRefs.values()].filter(c => c.el && c.item)
+}
+defineExpose({ reset, pages, scrollTo: (y) => { if (viewportEl.value) viewportEl.value.scrollTop = y }, getCells })
 </script>
 
 <style scoped>

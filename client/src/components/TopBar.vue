@@ -12,6 +12,10 @@
         <Icon name="star" :size="14" /> 收藏
         <span v-if="store.favTotal > 0" class="cnt">{{ store.favTotal }}</span>
       </button>
+      <button class="tab" :class="{ on: store.tab === 'trash' }" @click="switchTab('trash')">
+        <Icon name="trash" :size="14" /> 回收站
+        <span v-if="store.trashTotal > 0" class="cnt danger">{{ store.trashTotal }}</span>
+      </button>
     </div>
 
     <div class="search-wrap">
@@ -51,7 +55,7 @@
         <option v-for="r in store.roots" :key="r.id" :value="r.id" :title="r.path">{{ r.display_name || r.path }}</option>
       </select>
 
-      <select v-model="store.ext" class="sel" title="类型过滤" @change="onFilterChange">
+      <select v-if="store.tab !== 'trash'" v-model="store.ext" class="sel" title="类型过滤" @change="onFilterChange">
         <option value="">全部类型</option>
         <option value="__dirs__">📁 文件夹</option>
         <optgroup label="媒体">
@@ -74,6 +78,7 @@
       </select>
 
       <select v-model="store.sort" class="sel" title="排序字段" @change="onFilterChange">
+        <option v-if="store.tab === 'trash'" value="trashed_at">按删除时间</option>
         <option value="name">按名称</option>
         <option value="size">按大小</option>
         <option value="mtime">按修改时间</option>
@@ -82,7 +87,7 @@
         {{ store.order === 'asc' ? '↑' : '↓' }}
       </button>
 
-      <label class="chk" title="仅显示收藏">
+      <label v-if="store.tab !== 'trash'" class="chk" title="仅显示收藏">
         <input type="checkbox" v-model="store.favOnly" @change="onFilterChange" />
         <Icon name="star" :size="12" /> 仅收藏
       </label>
@@ -162,6 +167,7 @@ function setView(m) {
   emit('filter-change')
 }
 function switchTab(t) {
+  if (t !== 'trash' && store.sort === 'trashed_at') store.sort = 'name'
   store.tab = t
   store.selected = null
   store.previewKey++
@@ -187,6 +193,7 @@ function switchTab(t) {
   background: #3d78e6; color: #fff; border-radius: 9px;
   font-size: 10px; padding: 0 6px; line-height: 16px;
 }
+.cnt.danger { background: #c0504d; }
 .search-wrap {
   flex: 1; min-width: 220px; max-width: 520px; position: relative; display: flex; align-items: center;
 }

@@ -34,6 +34,16 @@
   复制收藏到 `data/collected/`，删除收藏之外的全部内容（收藏目录子树整体豁免），自底向上移除空目录，
   完成后自动增量重扫受影响根。**安全护栏：没有任何收藏时拒绝执行清理**（收藏即保留清单）。
 - **后台任务 + 实时进度**：task 插件任务状态机 + SSE 事件流，前端任务栏展示进度。
+- **回收站（软删除）**：删除的文件/目录先移入根目录下 `.ff_trash/`（保留相对路径结构，
+  同名冲突自动追加 `~<时间戳>`），数据库标记 `trashed` 并从普通搜索/收藏中隐藏；「回收站」
+  页签可**恢复**（移回原位，目标已存在时报错并跳过该条）或**彻底删除 / 清空**（才真正从磁盘
+  移除并从数据库删除）；增量扫描跳过回收站条目，原位置出现同名新文件时旧条目自动「复活」
+  （取消 trashed 标记）。**确认策略：移入回收站不弹确认（高频操作），回收站内再次删除与
+  清空必须二次确认（不可恢复）。**
+- **多选 + 右键菜单**：表格/卡片视图支持 **Ctrl/Shift 多选** 与 **拉框多选**（空白处拖拽框选，
+  与可视区已渲染元素求交，跨页选择在内存中累积）；选中后状态栏出现批量按钮（收藏 / 移入回收站；
+  回收站页为恢复 / 彻底删除），支持 **Delete 键**快速删除；右键菜单提供预览 / 收藏 / 下载 /
+  移入回收站（回收站页为恢复 / 彻底删除 / 清空），右键未选中的项会自动先单选该项。
 
 ## 快速开始
 
@@ -105,7 +115,8 @@ services/file_finder/
 | 根目录 | `GET/POST /roots`、`DELETE /roots/{id}`、`POST /roots/{id}/enable` | 增删查、启停 |
 | 扫描 | `POST /roots/{id}/scan` | `mode=full\|incremental`，返回 task_id |
 | 搜索 | `GET /search` | `q/root_id/ext/size/date/fav_only/sort/order/page/page_size/after_*`，返回 `next_cursor` |
-| 文件 | `GET/DELETE /files/{id}`、`POST /files/batch-delete` | 详情、删除（同步清索引与收藏） |
+| 文件 | `GET/DELETE /files/{id}`、`POST /files/batch-delete` | 详情、删除（移入回收站，同步取消收藏） |
+| 回收站 | `GET /trash/list`、`POST /trash/restore`、`POST /trash/purge`、`POST /trash/empty` | 列表 / 恢复 / 彻底删除（二次确认）/ 清空（二次确认） |
 | 收藏 | `GET /favorites`、`POST /favorites/toggle`、`DELETE /favorites/{id}`、`POST /favorites/prune-missing` | 列表 / 切换 / 移除 / 清理失效 |
 | 预览 | `GET /files/{id}/preview\|thumb\|download\|preview-info` | 文本 / 图片 / 视频 / 下载 |
 | 任务 | `GET /tasks`、`GET /tasks/{id}/events`(SSE)、`POST /tasks/{id}/cancel` | 后台任务与进度 |

@@ -48,7 +48,7 @@
     </div>
 
     <div class="main">
-      <div class="list-area">
+      <div class="list-area" @mousedown="onAreaMouseDown">
         <!-- 表格表头：列标题 + 排序 + 可拖拽列宽 -->
         <div v-if="isTable" class="tbl-head">
           <div class="th th-ic"></div>
@@ -78,8 +78,9 @@
         >
           <template #item="{ item, index }">
             <!-- 表格视图（列宽与表头一致，可随表头拖拽调整） -->
-            <div v-if="isTable" class="trow" :class="{ sel: selectedId(item) }"
-                 @click="onCellClick(item)" @dblclick="onCellDbl(item)">
+            <div v-if="isTable" class="trow" :class="{ sel: isSel(item) }"
+                 @click="onCellClick(item, $event)" @dblclick="onCellDbl(item)"
+                 @contextmenu.prevent="onCtx($event, item)">
               <span class="t-ic" :style="{ color: item && itemColor(item), width: 26 }">
                 <Icon v-if="item" :name="iconOf(item)" :size="15" />
               </span>
@@ -99,10 +100,11 @@
               v-else
               :item="item"
               :mode="store.viewMode"
-              :selected="selectedId(item)"
-              @select="onCellClick"
+              :selected="isSel(item)"
+              @select="(it, e) => onCellClick(it, e)"
               @fav="onToggleFav"
               @dbl="onCellDbl"
+              @ctx="onCtx($event, item)"
             />
           </template>
         </VirtualList>
@@ -118,11 +120,30 @@
         <div class="statusbar">
           <span class="st-item">共 <b>{{ activeTotal.toLocaleString() }}</b> 项</span>
           <span class="st-item">已加载 <b>{{ loadedCount }}</b> 项</span>
-          <span v-if="store.selected" class="st-item sel-info">
+          <span v-if="selCount" class="st-item sel-info accent-info">
+            <Icon name="check" :size="12" /> 已选 <b>{{ selCount }}</b> 项
+            <button class="st-mini" @click="clearSelection" title="取消全选">✕</button>
+          </span>
+          <span v-else-if="store.selected" class="st-item sel-info">
             <Icon name="eye" :size="12" /> {{ store.selected.name }}
           </span>
           <span class="st-spacer"></span>
-          <button class="st-btn" :class="{ on: store.showPreview }" @click="store.showPreview = !store.showPreview">
+          <template v-if="selCount && store.tab !== 'trash'">
+            <button class="st-btn" @click="batchFav" :title="batchFavTitle">
+              <Icon name="star" :size="13" /> 收藏
+            </button>
+            <button class="st-btn danger" @click="batchDelete">
+              <Icon name="trash" :size="13" /> 删除
+            </button>
+          </template>
+          <template v-if="selCount && store.tab === 'trash'">
+            <button class="st-btn" @click="batchRestore"><Icon name="undo" :size="13" /> 恢复</button>
+            <button class="st-btn danger" @click="batchPurge"><Icon name="x" :size="13" /> 彻底删除</button>
+          </template>
+          <button v-if="store.tab === 'trash'" class="st-btn danger" @click="trashEmpty">
+            <Icon name="trash" :size="13" /> 清空回收站
+          </button>
+          <button v-else class="st-btn" :class="{ on: store.showPreview }" @click="store.showPreview = !store.showPreview">
             <Icon name="eye" :size="13" /> 预览
           </button>
           <button v-if="store.tab === 'favorites'" class="st-btn" @click="pruneMissing">
@@ -131,16 +152,23 @@
           <button v-if="store.tab === 'fs'" class="st-btn accent" @click="enterSearchInDir">
             <Icon name="search" :size="13" /> 在此目录搜索
           </button>
-          <button class="st-btn accent" @click="showCollect = true">
+          <button v-if="store.tab !== 'trash'" class="st-btn accent" @click="showCollect = true">
             <Icon name="package" :size="13" /> 整理收藏
           </button>
         </div>
       </div>
 
-      <PreviewPanel v-if="store.showPreview" @deleted="onFilterChange" />
+      <PreviewPanel v-if="store.showPreview && store.tab !== 'trash'" @deleted="onFilterChange" />
     </div>
 
     <TaskBar ref="taskBarRef" />
+
+    <div v-if="ctxMenu" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @mousedown.stop @contextmenu.prevent>
+      <button v-for="it in ctxMenu.items" :key="it.key" class="ctx-item" :class="{ danger: it.danger }" @click="runCtx(it.key)">
+        <Icon :name="it.icon" :size="14" />
+        {{ it.label }}
+      </button>
+    </div>
 
     <RootManager :open="showRoots" @close="showRoots = false" @task="trackTask" />
     <CollectDialog :open="showCollect" @close="showCollect = false" @task="trackTask" @done="onFilterChange" />
@@ -159,12 +187,43 @@ import CollectDialog from './components/CollectDialog.vue'
 import Icon from './components/Icon.vue'
 import { store, viewCfg, tableCols, saveTableCols } from './store'
 import { trackTask } from './tasks'
-import { apiSearch, apiFavorites, apiRoots, apiStats, apiFiles, apiFs } from './api'
+import { apiSearch, apiFavorites, apiRoots, apiStats, apiFiles, apiFs, apiTrash } from './api'
 import { formatSize, formatDate } from './utils/format'
 import { fileIcon, fileColor } from './utils/fileTypes'
 
 const pageSize = 300
 const listRef = ref(null)
+
+/* ---------- 多选（Ctrl/Shift + 框选） ---------- */
+const selKeys = ref(new Set())   // 已选唯一键集合（跨页累积）
+let selAnchor = null             // Shift 范围锚点（唯一键）
+const pageItems = {}             // 页索引 -> items（范围选择的有序来源）
+
+function selKeyOf(item) {
+  if (!item) return null
+  if (store.tab === 'favorites') return 'f' + item.fav_id
+  if (store.tab === 'trash') return 't' + item.id
+  if (store.tab === 'fs') return 'p' + item.root_id + '/' + item.rel_path
+  return 'i' + item.id
+}
+function isSel(item) {
+  const k = selKeyOf(item)
+  return !!k && selKeys.value.has(k)
+}
+const selCount = computed(() => selKeys.value.size)
+function clearSelection() {
+  selKeys.value = new Set()
+  selAnchor = null
+}
+function orderedItems() {
+  const out = []
+  for (let i = 0; i < loadedPages.value; i++) out.push(...(pageItems[i] || []))
+  return out
+}
+function selectedItems() {
+  const keys = selKeys.value
+  return orderedItems().filter(i => keys.has(selKeyOf(i)))
+}
 
 /* ---------- 表格视图：列定义 / 排序 / 列宽拖拽 ---------- */
 const tableColsDef = [
@@ -231,6 +290,7 @@ const isTable = computed(() => store.viewMode === 'table')
 const activeTotal = computed(() => {
   if (store.tab === 'favorites') return store.favTotal
   if (store.tab === 'fs') return store.fsTotal
+  if (store.tab === 'trash') return store.trashTotal
   return store.searchTotal
 })
 const loadedCount = computed(() => Math.min(loadedPages.value * pageSize, activeTotal.value))
@@ -243,10 +303,12 @@ const fsSegs = computed(() => (store.fsRel ? store.fsRel.split('/') : []))
 const emptyText = computed(() => {
   if (store.tab === 'favorites') return '暂无收藏内容'
   if (store.tab === 'fs') return '目录为空'
+  if (store.tab === 'trash') return '回收站是空的'
   return '没有匹配的文件'
 })
 const emptySub = computed(() => {
   if (store.tab === 'fs') return '可点击「↑ 上级」返回，或在「设置」中添加扫描根目录'
+  if (store.tab === 'trash') return '删除的文件会先进入回收站，在这里可恢复或彻底删除'
   return '可尝试调整搜索词 / 过滤条件，或在「设置」中添加扫描根目录'
 })
 
@@ -289,6 +351,7 @@ function searchParams(page, cursor) {
 async function fetchPage(pageIdx) {
   const gen = listKey.value   // 本次请求所属列表代次（重建后旧响应必须丢弃）
   loadedPages.value = Math.max(loadedPages.value, pageIdx + 1)
+  let res
   if (store.tab === 'favorites') {
     const p = {
       q: store.q, root_id: store.rootId, sort: store.sort === 'name' ? 'name' : store.sort,
@@ -296,18 +359,23 @@ async function fetchPage(pageIdx) {
       page: pageIdx + 1, page_size: pageSize,
     }
     for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]
-    const r = await apiFavorites.list(p)
+    res = await apiFavorites.list(p)
     if (gen !== listKey.value) return { total: 0, items: [] }
-    store.favTotal = r.data.total
+    store.favTotal = res.data.total
     // 收藏项映射 file_id → id（缩略图/预览用），缺失文件 id 为 null
-    const items = r.data.items.map(f => ({
-      ...f,
-      id: f.file_id || null,
-      favorite: true,
-    }))
-    return { total: r.data.total, items }
-  }
-  if (store.tab === 'fs') {
+    res.data.items = res.data.items.map(f => ({ ...f, id: f.file_id || null, favorite: true }))
+  } else if (store.tab === 'trash') {
+    if (store.sort === 'name') store.sort = 'trashed_at'
+    const p = {
+      q: store.q, root_id: store.rootId, sort: store.sort, order: store.order,
+      page: pageIdx + 1, page_size: pageSize,
+    }
+    for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]
+    res = await apiTrash.list(p)
+    if (gen !== listKey.value) return { total: 0, items: [] }
+    store.trashTotal = res.data.total
+    res.data.items = res.data.items.map(t => ({ ...t, is_dir: !!t.is_dir }))
+  } else if (store.tab === 'fs') {
     if (!store.fsRoot) return { total: 0, items: [] }
     const cursor = fsCursors[pageIdx] || null
     const p = {
@@ -318,24 +386,26 @@ async function fetchPage(pageIdx) {
       order: store.order,
       ...(cursor || {}),
     }
-    const r = await apiFs.list(p)
+    res = await apiFs.list(p)
     if (gen !== listKey.value) return { total: 0, items: [] }
-    store.fsTotal = r.data.total
-    fsCursors[pageIdx + 1] = r.data.next_cursor || null
-    return { total: r.data.total, items: r.data.items }
+    store.fsTotal = res.data.total
+    fsCursors[pageIdx + 1] = res.data.next_cursor || null
+  } else {
+    // 游标分页：顺序滚动时深翻页不重扫 OFFSET
+    const cursor = pageCursors[pageIdx] || null
+    res = await apiSearch(searchParams(pageIdx + 1, cursor))
+    if (gen !== listKey.value) return { total: 0, items: [] }
+    store.searchTotal = res.data.total
+    pageCursors[pageIdx + 1] = res.data.next_cursor || null
   }
-  // 游标分页：顺序滚动时深翻页不重扫 OFFSET
-  const cursor = pageCursors[pageIdx] || null
-  const r = await apiSearch(searchParams(pageIdx + 1, cursor))
-  if (gen !== listKey.value) return { total: 0, items: [] }
-  store.searchTotal = r.data.total
-  pageCursors[pageIdx + 1] = r.data.next_cursor || null
-  return { total: r.data.total, items: r.data.items }
+  pageItems[pageIdx] = res.data.items || []
+  return { total: res.data.total, items: res.data.items || [] }
 }
 
 function onTotalUpdate(total) {
   if (store.tab === 'favorites') store.favTotal = total
   else if (store.tab === 'fs') store.fsTotal = total
+  else if (store.tab === 'trash') store.trashTotal = total
   else store.searchTotal = total
 }
 
@@ -352,6 +422,7 @@ function onFilterChange() {
   fsCursors[0] = null
   listKey.value++          // 重建 VirtualList（清空页缓存）
   store.selected = null
+  clearSelection()
   store.previewKey++
   refreshStats()
 }
@@ -416,16 +487,90 @@ function enterSearchInDir() {
 
 /* ---------- 交互 ---------- */
 
-function selectedId(item) {
-  if (!store.selected || !item) return false
-  if (store.tab === 'favorites') return store.selected.fav_id === item.fav_id
-  return store.selected.id === item.id
-}
-
-function onCellClick(item) {
+function onCellClick(item, e) {
   if (!item) return
+  const k = selKeyOf(item)
+  const ctrl = e && (e.ctrlKey || e.metaKey)
+  const shift = e && e.shiftKey
+  if (ctrl) {
+    if (selKeys.value.has(k)) {
+      const next = new Set(selKeys.value); next.delete(k)
+      selKeys.value = next
+      if (next.size === 0) selAnchor = null
+    } else {
+      const next = new Set(selKeys.value); next.add(k)
+      selKeys.value = next
+      selAnchor = k
+    }
+  } else if (shift && selAnchor != null) {
+    const ids = orderedItems().map(selKeyOf)
+    const a = ids.indexOf(selAnchor)
+    const b = ids.indexOf(k)
+    const next = new Set(selKeys.value)
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a]
+      for (let i = lo; i <= hi; i++) if (ids[i]) next.add(ids[i])
+    } else {
+      next.add(k)
+    }
+    selKeys.value = next
+  } else {
+    selKeys.value = new Set([k])
+    selAnchor = k
+  }
   store.selected = item
   store.previewKey++
+}
+
+/* ---------- 拉框多选 ---------- */
+let boxStart = null
+let boxEl = null
+function onAreaMouseDown(e) {
+  if (e.button !== 0) return
+  const t = e.target
+  if (!(t instanceof Element)) return
+  // 只在空白区域启动（排除表头/行/卡片/状态栏/控件）
+  if (t.closest('.tbl-head, .statusbar, .card, .trow, button, select, input, label, .rootstrip, .ctx-menu, a')) return
+  boxStart = { x: e.clientX, y: e.clientY }
+  window.addEventListener('mousemove', onBoxMove)
+  window.addEventListener('mouseup', onBoxUp)
+}
+function onBoxMove(e) {
+  if (!boxStart) return
+  const area = document.querySelector('.list-area')
+  if (!area) return
+  if (!boxEl) {
+    boxEl = document.createElement('div')
+    boxEl.className = 'box-select'
+    area.appendChild(boxEl)
+  }
+  const x = Math.min(boxStart.x, e.clientX)
+  const y = Math.min(boxStart.y, e.clientY)
+  boxEl.style.left = x + 'px'
+  boxEl.style.top = y + 'px'
+  boxEl.style.width = Math.abs(e.clientX - boxStart.x) + 'px'
+  boxEl.style.height = Math.abs(e.clientY - boxStart.y) + 'px'
+}
+function onBoxUp() {
+  window.removeEventListener('mousemove', onBoxMove)
+  window.removeEventListener('mouseup', onBoxUp)
+  if (!boxStart) return
+  boxStart = null
+  if (!boxEl) return
+  const r = boxEl.getBoundingClientRect()
+  boxEl.remove()
+  boxEl = null
+  if (r.width < 4 && r.height < 4) return  // 视为点击而非框选
+  const next = new Set(selKeys.value)
+  const cells = listRef.value ? listRef.value.getCells() : []
+  for (const { el, item } of cells) {
+    const er = el.getBoundingClientRect()
+    if (er.left < r.right && er.right > r.left && er.top < r.bottom && er.bottom > r.top) {
+      const k = selKeyOf(item)
+      if (k) { next.add(k); selAnchor = k }
+    }
+  }
+  selKeys.value = next
 }
 
 function onCellDbl(item) {
@@ -440,6 +585,125 @@ function onCellDbl(item) {
   a.href = apiFiles.downloadUrl(item.id)
   a.download = item.name
   a.click()
+}
+
+/* ---------- 右键菜单 ---------- */
+const ctxMenu = ref(null)
+let closeCtxFn = null
+function onCtx(e, item) {
+  e.preventDefault()
+  // 右键项未选中 → 单选它
+  if (item) {
+    const k = selKeyOf(item)
+    if (!selKeys.value.has(k)) {
+      selKeys.value = new Set([k])
+      selAnchor = k
+    }
+    store.selected = item
+    store.previewKey++
+  }
+  ctxMenu.value = {
+    x: Math.min(e.clientX, window.innerWidth - 190),
+    y: Math.min(e.clientY, window.innerHeight - 200),
+    items: menuItems(),
+  }
+  if (closeCtxFn) window.removeEventListener('mousedown', closeCtxFn, true)
+  closeCtxFn = () => { ctxMenu.value = null }
+  window.addEventListener('mousedown', closeCtxFn, true)
+}
+function menuItems() {
+  const sel = selectedItems()
+  const n = sel.length
+  const one = sel[0]
+  if (store.tab === 'trash') {
+    return [
+      { key: 'restore', label: `恢复${n > 1 ? `（${n} 项）` : ''}`, icon: 'undo' },
+      { key: 'purge', label: `彻底删除${n > 1 ? `（${n} 项）` : ''}`, icon: 'x', danger: true },
+      { key: 'empty', label: '清空回收站', icon: 'trash', danger: true },
+    ]
+  }
+  const items = []
+  if (n === 1 && !one.is_dir && one.id) {
+    items.push({ key: 'preview', label: '预览', icon: 'eye' })
+  }
+  const fav = one && one.fav_id
+  items.push({
+    key: 'fav', label: fav ? '取消收藏' : (n > 1 ? `收藏（${n} 项）` : '收藏'),
+    icon: 'star',
+  })
+  if (n === 1 && !one.is_dir && one.id) {
+    items.push({ key: 'download', label: '下载', icon: 'download' })
+  }
+  const deletable = sel.some(i => i.id)
+  if (deletable) {
+    items.push({ key: 'delete', label: `移入回收站${n > 1 ? `（${n} 项）` : ''}`, icon: 'trash', danger: true })
+  }
+  return items
+}
+function runCtx(key) {
+  ctxMenu.value = null
+  if (key === 'fav') return batchFav()
+  if (key === 'delete') return batchDelete()
+  if (key === 'restore') return batchRestore()
+  if (key === 'purge') return batchPurge()
+  if (key === 'empty') return trashEmpty()
+  const sel = selectedItems()
+  const one = sel[0]
+  if (key === 'preview' && one) { store.selected = one; store.previewKey++ }
+  if (key === 'download' && one) {
+    const a = document.createElement('a')
+    a.href = apiFiles.downloadUrl(one.id)
+    a.download = one.name
+    a.click()
+  }
+}
+
+/* ---------- 批量操作 ---------- */
+async function batchFav() {
+  const items = selectedItems().filter(i => !i.fav_id && i.id)
+  if (!items.length) return
+  for (const it of items) {
+    try { await apiFavorites.toggle(it.id) } catch { /* 单条失败继续 */ }
+  }
+  onFilterChange()
+}
+const batchFavTitle = '批量收藏所选项目（已收藏的跳过）'
+async function batchDelete() {
+  const items = selectedItems()
+  const withId = items.filter(i => i.id)
+  if (!withId.length) {
+    alert('所选项目中无已索引文件（未索引的文件需先扫描）')
+    return
+  }
+  if (withId.length !== items.length) {
+    alert(`${items.length - withId.length} 项未索引，无法删除；将删除其余 ${withId.length} 项`)
+  }
+  // 移入回收站可随时恢复，不做二次确认（高频操作）
+  await apiFiles.batchDelete(withId.map(i => i.id))
+  clearSelection()
+  onFilterChange()
+}
+async function batchRestore() {
+  const items = selectedItems()
+  if (!items.length) return
+  const r = await apiTrash.restore(items.map(i => i.id))
+  alert(`已恢复 ${r.data.restored} 项` + (r.data.errors?.length ? `；${r.data.errors.length} 项失败（目标位置已存在同名文件）` : ''))
+  clearSelection()
+  onFilterChange()
+}
+async function batchPurge() {
+  const items = selectedItems()
+  if (!items.length) return
+  if (!confirm(`彻底删除 ${items.length} 项？此操作不可恢复（回收站文件将从磁盘移除）`)) return
+  await apiTrash.purge(items.map(i => i.id))
+  clearSelection()
+  onFilterChange()
+}
+async function trashEmpty() {
+  if (!confirm('清空回收站？所有条目将被彻底删除（磁盘文件同时移除），不可恢复')) return
+  await apiTrash.empty()
+  clearSelection()
+  onFilterChange()
 }
 
 async function onToggleFav(item) {
@@ -502,7 +766,14 @@ onMounted(() => {
 onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 
 function onGlobalKey(e) {
-  if (e.key === 'Escape') onEsc()
+  if (e.key === 'Escape') {
+    if (ctxMenu.value) { ctxMenu.value = null; return }
+    onEsc()
+    return
+  }
+  if (e.key === 'Delete' && selKeys.value.size && store.tab !== 'trash') {
+    batchDelete()
+  }
 }
 
 const iconOf = fileIcon
@@ -646,4 +917,35 @@ html, body, #app {
 .st-btn.on { color: #6ab0ff; border-color: #3d78e6; }
 .st-btn.accent { color: #6ab0ff; border-color: #3d556e; }
 .st-btn.accent:hover { background: rgba(76,139,245,.12); }
+.st-btn.danger { color: #e08a8a; border-color: #5e3a3a; }
+.st-btn.danger:hover { background: rgba(224,92,92,.12); color: #ff9d9d; }
+.accent-info { color: #6ab0ff; }
+.st-mini {
+  background: none; border: none; color: inherit; cursor: pointer;
+  padding: 0 2px; font-size: 10px; opacity: .7;
+}
+.st-mini:hover { opacity: 1; }
+
+/* 右键菜单 */
+.ctx-menu {
+  position: fixed; z-index: 200;
+  min-width: 150px; background: #232529; border: 1px solid #3a3d44;
+  border-radius: 8px; padding: 4px; box-shadow: 0 8px 28px rgba(0,0,0,.5);
+  display: flex; flex-direction: column;
+}
+.ctx-item {
+  display: flex; align-items: center; gap: 8px;
+  background: none; border: none; color: #c9cdd4; text-align: left;
+  padding: 7px 10px; border-radius: 6px; font-size: 12.5px; cursor: pointer;
+}
+.ctx-item:hover { background: rgba(76,139,245,.18); color: #fff; }
+.ctx-item.danger { color: #e08a8a; }
+.ctx-item.danger:hover { background: rgba(224,92,92,.16); color: #ff9d9d; }
+
+/* 拉框多选 */
+:deep(.box-select) {
+  position: fixed; z-index: 100; pointer-events: none;
+  background: rgba(76,139,245,.14); border: 1px solid #3d78e6;
+  border-radius: 2px;
+}
 </style>

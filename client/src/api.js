@@ -59,6 +59,7 @@ export const apiFavorites = {
 export const apiFiles = {
   detail: (id) => api(`/files/${id}`),
   remove: (id) => api(`/files/${id}`, { method: 'DELETE' }),
+  batchDelete: (ids) => api('/files/batch-delete', { method: 'POST', body: JSON.stringify({ ids }), headers: { 'Content-Type': 'application/json' } }),
   previewInfo: (id) => api(`/files/${id}/preview-info`),
   downloadUrl: (id) => `${API_BASE}/files/${id}/download`,
   thumbUrl: (id, size = 256) => `${API_BASE}/files/${id}/thumb?size=${size}`,
@@ -86,6 +87,13 @@ export const apiCollect = {
     body: JSON.stringify({ copy: true, cleanup: true, remove_empty_roots: true, confirm: true, ...opts }),
     headers: { 'Content-Type': 'application/json' },
   }),
+}
+
+export const apiTrash = {
+  list: (params) => api('/trash/list?' + new URLSearchParams(params).toString()),
+  restore: (ids) => api('/trash/restore', { method: 'POST', body: JSON.stringify({ ids }), headers: { 'Content-Type': 'application/json' } }),
+  purge: (ids) => api('/trash/purge', { method: 'POST', body: JSON.stringify({ ids }), headers: { 'Content-Type': 'application/json' } }),
+  empty: () => api('/trash/empty', { method: 'POST', body: JSON.stringify({}), headers: { 'Content-Type': 'application/json' } }),
 }
 
 export const apiStats = () => api('/stats')
