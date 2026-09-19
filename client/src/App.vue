@@ -714,9 +714,17 @@ async function batchDelete() {
   const r = await apiFiles.batchDelete(withId.map(i => i.id))
   clearSelection()
   const moved = r.data?.moved || 0
+  const errs = r.data?.errors || []
+  // 移动失败的文件并未删除（仍在原位置），保留在列表并明确提示，避免"删了又恢复"的错觉
+  const errSet = new Set(errs.map(e => e.rel_path))
+  const okItems = withId.filter(i => !errSet.has(i.rel_path))
+  if (errs.length) {
+    const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+    alert(`有 ${errs.length} 项删除失败（文件被占用或网络共享不可写），已保留在列表中：${brief}`)
+  }
   // 局部刷新：只更新删除点之后的缓存，不重建整个列表（避免白屏）
   const curTotal = store.tab === 'fs' ? store.fsTotal : store.searchTotal
-  if (listRef.value) listRef.value.removeAndRefresh(withId.map(i => i.id), Math.max(0, curTotal - moved))
+  if (listRef.value) listRef.value.removeAndRefresh(okItems.map(i => i.id), Math.max(0, curTotal - moved))
   else onFilterChange()
   store.trashTotal += moved
   refreshStats()
@@ -726,10 +734,19 @@ async function batchRestore() {
   if (!items.length) return
   markKeepPos()
   const r = await apiTrash.restore(items.map(i => i.id))
-  alert(`已恢复 ${r.data.restored} 项` + (r.data.errors?.length ? `；${r.data.errors.length} 项失败（目标位置已存在同名文件）` : ''))
+  const errs = r.data?.errors || []
+  if (errs.length) {
+    const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+    alert(`已恢复 ${r.data.restored} 项；${errs.length} 项失败（目标位置已存在同名文件），保留在回收站：${brief}`)
+  } else {
+    alert(`已恢复 ${r.data.restored} 项`)
+  }
   clearSelection()
   const restored = r.data?.restored || 0
-  if (listRef.value) listRef.value.removeAndRefresh(items.map(i => i.id), Math.max(0, store.trashTotal - restored))
+  // 只移除恢复成功的条目，失败条目保留在回收站列表
+  const errSet = new Set(errs.map(e => e.rel_path))
+  const okItems = items.filter(i => !errSet.has(i.rel_path))
+  if (listRef.value) listRef.value.removeAndRefresh(okItems.map(i => i.id), Math.max(0, store.trashTotal - restored))
   else onFilterChange()
   refreshStats()
 }
@@ -758,9 +775,16 @@ async function batchPurge() {
   if (!ok) return
   markKeepPos()
   const r = await apiTrash.purge(items.map(i => i.id))
+  const errs = r.data?.errors || []
+  if (errs.length) {
+    const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+    alert(`已彻底删除 ${r.data.purged} 项；${errs.length} 项失败（文件被占用或网络问题），保留在回收站：${brief}`)
+  }
   clearSelection()
   const purged = r.data?.purged || 0
-  if (listRef.value) listRef.value.removeAndRefresh(items.map(i => i.id), Math.max(0, store.trashTotal - purged))
+  const errSet = new Set(errs.map(e => e.rel_path))
+  const okItems = items.filter(i => !errSet.has(i.rel_path))
+  if (listRef.value) listRef.value.removeAndRefresh(okItems.map(i => i.id), Math.max(0, store.trashTotal - purged))
   else onFilterChange()
   refreshStats()
 }
@@ -768,10 +792,16 @@ async function trashEmpty() {
   const ok = await askConfirm('清空回收站', '回收站将被清空，所有条目彻底删除（磁盘文件同时移除），此操作不可恢复。', true)
   if (!ok) return
   markKeepPos()
-  await apiTrash.empty()
+  const r = await apiTrash.empty()
   clearSelection()
-  if (listRef.value) listRef.value.clearAll(0)
-  else onFilterChange()
+  const purged = r.data?.purged || 0
+  if (purged < store.trashTotal) {
+    alert(`已清空 ${purged} 项；${store.trashTotal - purged} 项删除失败（文件被占用或网络问题），保留在回收站`)
+    onFilterChange()   // 重拉显示真实剩余
+  } else if (listRef.value) {
+    listRef.value.clearAll(0)
+  }
+  store.trashTotal = purged
   refreshStats()
 }
 
