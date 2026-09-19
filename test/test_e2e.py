@@ -1,7 +1,9 @@
 """file_finder 端到端 API 测试（针对本地沙箱）"""
 import json
 import os
+import subprocess
 import sys
+import urllib.parse
 import urllib.request
 
 BASE = "http://127.0.0.1:8000/api/file_finder"
@@ -37,7 +39,11 @@ def check(name, cond, detail=""):
 
 ok = True
 
-# 0. 清理历史收藏（保证幂等）
+# 0. 重建沙箱（幂等：上一轮测试可能删除了 data.json 等文件）
+sb = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_sandbox.py")
+subprocess.run([sys.executable, sb], check=True, capture_output=True)
+
+# 0b. 清理历史收藏（保证幂等）
 st, old_favs = req("GET", "/favorites?page_size=1000")
 for f in old_favs["data"]["items"]:
     req("DELETE", f"/favorites/{f['fav_id']}")
@@ -60,7 +66,7 @@ ok &= check("search finds readme.md", "readme.md" in files)
 ok &= check("search finds photo.png", "photo.png" in files)
 ok &= check("search finds clip.mp4", "clip.mp4" in files)
 ok &= check("search finds sub/inner.txt", any(i["name"] == "inner.txt" for i in s["data"]["items"]))
-ok &= check("sandbox total=11", s["data"]["total"] == 11, f"total={s['data']['total']}")
+ok &= check("sandbox total=13", s["data"]["total"] == 13, f"total={s['data']['total']}")
 
 # 2. 文本预览
 st, text = req("GET", "/files/" + str(files["readme.md"]["id"]) + "/preview")
@@ -105,6 +111,22 @@ ok &= check("deleted from disk", not os.path.exists(disk_path))
 st, fav = req("GET", "/favorites?q=data.json")
 ok &= check("favorite removed with explicit delete", fav["data"]["total"] == 0,
             f"total={fav['data']['total']}")
+
+# 7b. 文件系统浏览（实时读盘，不触发全量扫描；目录是“多出来的内容”）
+sb_root = os.path.join(os.environ["TEMP"], "ff_sandbox")
+st, fs = req("GET", "/fs/list?path=" + urllib.parse.quote(sb_root) + "&page_size=100")
+ok &= check("fs root total=8", fs["data"]["total"] == 8, f"total={fs['data'].get('total')}")
+fs_names = [i["name"] for i in fs["data"]["items"]]
+ok &= check("fs has dir sub", "sub" in fs_names, f"names={fs_names[:6]}")
+ok &= check("fs dir indexed", all(i["indexed"] for i in fs["data"]["items"]), "dirs should be indexed")
+st, fs2 = req("GET", "/fs/list?path=" + urllib.parse.quote(os.path.join(sb_root, "sub")))
+ok &= check("fs sub total=3", fs2["data"]["total"] == 3, f"total={fs2['data'].get('total')}")
+sub_names = {i["name"]: i for i in fs2["data"]["items"]}
+ok &= check("fs sub items", {"inner.txt", "thumb_test.png", "nested"} <= set(sub_names), f"names={list(sub_names)}")
+ok &= check("fs nested is dir", sub_names["nested"]["is_dir"] is True)
+# 越界护栏：temp 目录不在扫描根内
+st, r3 = req("GET", "/fs/list?path=" + urllib.parse.quote(os.environ["TEMP"]))
+ok &= check("fs guard 400", st == 400, f"status={st}")
 
 # 8. 收藏整理 plan
 st, plan = req("GET", "/collect/plan")

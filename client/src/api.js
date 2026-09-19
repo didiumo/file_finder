@@ -44,6 +44,11 @@ export const apiRoots = {
 
 export const apiSearch = (params) => api('/search?' + new URLSearchParams(params).toString())
 
+/** 文件系统浏览（实时读盘，不触发索引扫描） */
+export const apiFs = {
+  list: (params) => api('/fs/list?' + new URLSearchParams(params).toString()),
+}
+
 export const apiFavorites = {
   list: (params) => api('/favorites?' + new URLSearchParams(params).toString()),
   toggle: (fileId) => api('/favorites/toggle', { method: 'POST', body: JSON.stringify({ file_id: fileId }), headers: { 'Content-Type': 'application/json' } }),

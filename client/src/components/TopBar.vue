@@ -5,6 +5,9 @@
       <button class="tab" :class="{ on: store.tab === 'search' }" @click="switchTab('search')">
         <Icon name="search" :size="14" /> 搜索
       </button>
+      <button class="tab" :class="{ on: store.tab === 'fs' }" @click="switchTab('fs')">
+        <Icon name="folder" :size="14" /> 文件系统
+      </button>
       <button class="tab" :class="{ on: store.tab === 'favorites' }" @click="switchTab('favorites')">
         <Icon name="star" :size="14" /> 收藏
         <span v-if="store.favTotal > 0" class="cnt">{{ store.favTotal }}</span>
@@ -17,15 +20,32 @@
         ref="qInput"
         v-model="qText"
         class="q-input"
+        :class="{ rx: store.regex }"
         type="text"
-        placeholder="搜索文件名 / 路径（回车即时搜索）"
+        :placeholder="searchPlaceholder"
         spellcheck="false"
+        :disabled="store.tab === 'fs'"
         @input="onInput"
+        @keydown.enter.prevent="onEnter"
       />
+      <button
+        class="rx-btn"
+        :class="{ on: store.regex }"
+        title="正则匹配（输入正则表达式，如 .*\\.(png|jpg)$）"
+        @click="toggleRegex"
+      >
+        <span class="rx-dot">.*</span>
+      </button>
       <button v-if="qText" class="clear" @click="clearQ"><Icon name="x" :size="13" /></button>
     </div>
 
-    <div class="filters">
+    <div v-if="store.searchScope" class="scope-chip" :title="`在 ${store.searchScope.label} 内搜索`">
+      <Icon name="folder" :size="12" />
+      <span class="scope-path">{{ store.searchScope.label }}</span>
+      <button class="scope-x" title="清除范围，恢复全局搜索" @click="clearScope"><Icon name="x" :size="11" /></button>
+    </div>
+
+    <div class="filters" v-if="store.tab !== 'fs'">
       <select v-model="store.rootId" class="sel" title="扫描根" @change="onFilterChange">
         <option :value="null">全部根目录</option>
         <option v-for="r in store.roots" :key="r.id" :value="r.id" :title="r.path">{{ r.display_name || r.path }}</option>
@@ -81,7 +101,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import Icon from './Icon.vue'
 import { store } from '../store'
 
@@ -90,12 +110,20 @@ const emit = defineEmits(['filter-change', 'refresh', 'open-roots'])
 const qText = ref('')
 const qInput = ref(null)
 let debounce = 0
+// 外部清空/切换搜索词（如“在此目录搜索”）时同步输入框
+watch(() => store.q, (v) => { qText.value = v || '' })
 const viewModes = [
   { key: 'small', label: '小缩略图', icon: 'grid' },
   { key: 'medium', label: '中缩略图', icon: 'grid' },
   { key: 'large', label: '大缩略图', icon: 'grid' },
   { key: 'table', label: '表格', icon: 'table' },
 ]
+
+const searchPlaceholder = computed(() => {
+  if (store.regex) return '正则匹配文件名 / 路径（如 .*\\.(png|jpg)$）'
+  if (store.searchScope) return `在「${store.searchScope.label}」内搜索（回车即时搜索）`
+  return '搜索文件名 / 路径（回车即时搜索）'
+})
 
 function onInput() {
   clearTimeout(debounce)
@@ -104,11 +132,24 @@ function onInput() {
     emit('filter-change')
   }, 150)
 }
+function onEnter() {
+  clearTimeout(debounce)
+  store.q = qText.value.trim()
+  emit('filter-change')
+}
 function clearQ() {
   qText.value = ''
   store.q = ''
   emit('filter-change')
   qInput.value && qInput.value.focus()
+}
+function toggleRegex() {
+  store.regex = !store.regex
+  emit('filter-change')
+}
+function clearScope() {
+  store.searchScope = null
+  emit('filter-change')
 }
 function onFilterChange() { emit('filter-change') }
 function toggleOrder() {
@@ -151,14 +192,31 @@ function switchTab(t) {
 .s-ic { position: absolute; left: 10px; color: #6c727c; pointer-events: none; }
 .q-input {
   width: 100%; background: #26282d; border: 1px solid #33363d; color: #e3e6eb;
-  border-radius: 8px; padding: 7px 30px 7px 32px; font-size: 13px; outline: none;
+  border-radius: 8px; padding: 7px 62px 7px 32px; font-size: 13px; outline: none;
 }
 .q-input:focus { border-color: #3d78e6; }
+.q-input.rx { border-color: #8a5ce6; }
+.q-input:disabled { opacity: .5; }
+.rx-btn {
+  position: absolute; right: 30px; background: none; border: none; cursor: pointer;
+  padding: 3px 5px; border-radius: 5px; color: #6c727c; display: flex; align-items: center;
+}
+.rx-btn:hover { color: #c9cdd4; }
+.rx-btn.on { background: rgba(138,92,230,.2); color: #b18cf0; }
+.rx-dot { font-family: Consolas, monospace; font-size: 12px; font-weight: 700; }
 .clear {
   position: absolute; right: 6px; background: none; border: none; color: #6c727c;
   cursor: pointer; padding: 3px; display: flex; border-radius: 4px;
 }
 .clear:hover { color: #e3e6eb; }
+.scope-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: rgba(76,139,245,.12); border: 1px solid #3d556e; color: #6ab0ff;
+  border-radius: 7px; padding: 4px 8px; font-size: 12px; max-width: 320px;
+}
+.scope-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope-x { background: none; border: none; color: inherit; cursor: pointer; padding: 1px; display: flex; opacity: .7; }
+.scope-x:hover { opacity: 1; }
 .filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .sel {
   background: #26282d; border: 1px solid #33363d; color: #c9cdd4;

@@ -46,14 +46,14 @@ const props = defineProps({
   mode: { type: String, default: 'medium' },
   selected: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'fav'])
+const emit = defineEmits(['select', 'fav', 'dbl'])
 
 const imgError = ref(false)
 const isVideo = computed(() => props.item && classifyExt(props.item.ext) === 'video')
 const iconName = computed(() => props.item ? fileIcon(props.item) : 'file')
 const iconSize = computed(() => (props.mode === 'small' ? 30 : props.mode === 'large' ? 56 : 42))
 const showThumb = computed(() => {
-  if (!props.item || imgError.value) return false
+  if (!props.item || !props.item.id || imgError.value) return false
   const k = classifyExt(props.item.ext)
   return (k === 'image') && props.mode !== 'small'
 })
@@ -73,7 +73,7 @@ function onClick(e) {
 }
 function onDblClick(e) {
   if (!props.item || e.altKey || e.ctrlKey || e.metaKey) return
-  emit('select', props.item)
+  emit('dbl', props.item)
 }
 </script>
 

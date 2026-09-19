@@ -7,8 +7,25 @@
       @open-roots="showRoots = true"
     />
 
-    <!-- 当前扫描根信息条（完整路径 + 索引状态，解决“不知道扫的是哪个路径”） -->
-    <div class="rootstrip" v-if="currentRoot">
+    <!-- 文件系统浏览：面包屑（类资源管理器） -->
+    <div class="rootstrip" v-if="store.tab === 'fs' && store.fsRoot">
+      <span class="rs-label">浏览</span>
+      <span class="crumb" :class="{ root: true }" :title="store.fsRoot.path" @click="gotoBreadcrumb(0)">
+        {{ store.fsRoot.display_name || store.fsRoot.path }}
+      </span>
+      <template v-for="(seg, i) in fsSegs" :key="i">
+        <span class="rs-sep">/</span>
+        <span class="crumb" :title="store.fsRel" @click="gotoBreadcrumb(i + 1)">{{ seg }}</span>
+      </template>
+      <span class="st-spacer"></span>
+      <button class="rs-btn" :disabled="!store.fsRel" @click="goUp">↑ 上级</button>
+      <button class="rs-btn accent" @click="enterSearchInDir" title="以当前文件夹为范围进入搜索界面">
+        <Icon name="search" :size="12" /> 在此目录搜索
+      </button>
+    </div>
+
+    <!-- 当前扫描根信息条（搜索/收藏视图） -->
+    <div class="rootstrip" v-else-if="store.tab !== 'fs' && currentRoot">
       <span class="rs-label">扫描根</span>
       <span class="rs-path" :title="currentRoot.path">{{ currentRoot.path }}</span>
       <span class="rs-sep">·</span>
@@ -19,6 +36,10 @@
       <span v-if="currentRoot.last_scan_status === 'running'" class="rs-running">扫描中…</span>
       <span v-else-if="currentRoot.last_scan_status === 'failed'" class="rs-bad">上次扫描失败</span>
       <span v-if="currentRoot.enabled === false" class="rs-bad">已停用</span>
+      <span v-if="store.searchScope" class="scope-tip">
+        搜索范围：{{ store.searchScope.label }}
+        <button class="scope-clear" @click="clearScope">✕</button>
+      </span>
     </div>
     <div class="rootstrip" v-else-if="store.roots && store.roots.length">
       <span class="rs-label">扫描根</span>
@@ -48,7 +69,7 @@
                 <Icon v-if="item" :name="iconOf(item)" :size="15" />
               </span>
               <span class="t-name" :title="item && item.rel_path">{{ item ? item.name : '' }}</span>
-              <span class="t-ext">{{ item ? (item.ext || '—') : '' }}</span>
+              <span class="t-ext">{{ item ? (item.ext || (item.is_dir ? '目录' : '—')) : '' }}</span>
               <span class="t-size">{{ item ? formatSize(item.size) : '' }}</span>
               <span class="t-date">{{ item ? formatDate(item.mtime) : '' }}</span>
               <span class="t-path" :title="item && item.root_path">{{ item ? item.root_path : '' }}</span>
@@ -65,6 +86,7 @@
               :selected="selectedId(item)"
               @select="onCellClick"
               @fav="onToggleFav"
+              @dbl="onCellDbl"
             />
           </template>
         </VirtualList>
@@ -72,8 +94,8 @@
         <!-- 空状态 -->
         <div v-if="activeTotal === 0 && !initialLoading" class="empty-tip">
           <Icon name="search" :size="40" />
-          <p>{{ store.tab === 'favorites' ? '暂无收藏内容' : '没有匹配的文件' }}</p>
-          <p class="sub">可尝试调整搜索词 / 过滤条件，或在「设置」中添加扫描根目录</p>
+          <p>{{ emptyText }}</p>
+          <p class="sub">{{ emptySub }}</p>
         </div>
 
         <!-- 状态栏 -->
@@ -89,6 +111,9 @@
           </button>
           <button v-if="store.tab === 'favorites'" class="st-btn" @click="pruneMissing">
             <Icon name="trash" :size="13" /> 清除失效收藏
+          </button>
+          <button v-if="store.tab === 'fs'" class="st-btn accent" @click="enterSearchInDir">
+            <Icon name="search" :size="13" /> 在此目录搜索
           </button>
           <button class="st-btn accent" @click="showCollect = true">
             <Icon name="package" :size="13" /> 整理收藏
@@ -118,7 +143,7 @@ import CollectDialog from './components/CollectDialog.vue'
 import Icon from './components/Icon.vue'
 import { store, viewCfg } from './store'
 import { trackTask } from './tasks'
-import { apiSearch, apiFavorites, apiRoots, apiStats, apiFiles } from './api'
+import { apiSearch, apiFavorites, apiRoots, apiStats, apiFiles, apiFs } from './api'
 import { formatSize, formatDate } from './utils/format'
 import { fileIcon, fileColor } from './utils/fileTypes'
 
@@ -131,15 +156,30 @@ const listKey = ref(0)
 const initialLoading = ref(true)
 const loadedPages = ref(0)
 const pageCursors = [null]   // pageCursors[n] = 第 n 页的入参游标（来自 n-1 页响应的 next_cursor）
+const fsCursors = [null]     // 文件系统浏览的游标（与 pageCursors 隔离）
 
 const cfg = computed(() => viewCfg())
 const isTable = computed(() => store.viewMode === 'table')
-const activeTotal = computed(() => (store.tab === 'favorites' ? store.favTotal : store.searchTotal))
+const activeTotal = computed(() => {
+  if (store.tab === 'favorites') return store.favTotal
+  if (store.tab === 'fs') return store.fsTotal
+  return store.searchTotal
+})
 const loadedCount = computed(() => Math.min(loadedPages.value * pageSize, activeTotal.value))
 const currentRoot = computed(() => {
   const rs = store.roots || []
   if (store.rootId) return rs.find(r => r.id === store.rootId) || null
   return rs[0] || null
+})
+const fsSegs = computed(() => (store.fsRel ? store.fsRel.split('/') : []))
+const emptyText = computed(() => {
+  if (store.tab === 'favorites') return '暂无收藏内容'
+  if (store.tab === 'fs') return '目录为空'
+  return '没有匹配的文件'
+})
+const emptySub = computed(() => {
+  if (store.tab === 'fs') return '可点击「↑ 上级」返回，或在「设置」中添加扫描根目录'
+  return '可尝试调整搜索词 / 过滤条件，或在「设置」中添加扫描根目录'
 })
 
 function formatCount(n) {
@@ -148,12 +188,23 @@ function formatCount(n) {
   return n.toLocaleString()
 }
 
+/* ---------- 文件系统路径工具 ---------- */
+
+function fsAbsPath() {
+  if (!store.fsRoot) return ''
+  if (!store.fsRel) return store.fsRoot.path
+  return store.fsRoot.path + '\\' + store.fsRel.split('/').join('\\')
+}
+
 /* ---------- 数据装配 ---------- */
 
 function searchParams(page, cursor) {
+  const scope = store.searchScope || {}
   const p = {
     q: store.q,
-    root_id: store.rootId,
+    root_id: scope.root_id != null ? scope.root_id : store.rootId,
+    prefix: scope.prefix || null,
+    regex: store.regex ? 1 : null,
     ext: store.ext,
     fav_only: store.favOnly ? 1 : null,
     sort: store.sort,
@@ -168,6 +219,7 @@ function searchParams(page, cursor) {
 }
 
 async function fetchPage(pageIdx) {
+  const gen = listKey.value   // 本次请求所属列表代次（重建后旧响应必须丢弃）
   loadedPages.value = Math.max(loadedPages.value, pageIdx + 1)
   if (store.tab === 'favorites') {
     const p = {
@@ -176,6 +228,7 @@ async function fetchPage(pageIdx) {
     }
     for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]
     const r = await apiFavorites.list(p)
+    if (gen !== listKey.value) return { total: 0, items: [] }
     store.favTotal = r.data.total
     // 收藏项映射 file_id → id（缩略图/预览用），缺失文件 id 为 null
     const items = r.data.items.map(f => ({
@@ -185,9 +238,27 @@ async function fetchPage(pageIdx) {
     }))
     return { total: r.data.total, items }
   }
+  if (store.tab === 'fs') {
+    if (!store.fsRoot) return { total: 0, items: [] }
+    const cursor = fsCursors[pageIdx] || null
+    const p = {
+      path: fsAbsPath(),
+      page: pageIdx + 1,
+      page_size: pageSize,
+      sort: 'name',
+      order: 'asc',
+      ...(cursor || {}),
+    }
+    const r = await apiFs.list(p)
+    if (gen !== listKey.value) return { total: 0, items: [] }
+    store.fsTotal = r.data.total
+    fsCursors[pageIdx + 1] = r.data.next_cursor || null
+    return { total: r.data.total, items: r.data.items }
+  }
   // 游标分页：顺序滚动时深翻页不重扫 OFFSET
   const cursor = pageCursors[pageIdx] || null
   const r = await apiSearch(searchParams(pageIdx + 1, cursor))
+  if (gen !== listKey.value) return { total: 0, items: [] }
   store.searchTotal = r.data.total
   pageCursors[pageIdx + 1] = r.data.next_cursor || null
   return { total: r.data.total, items: r.data.items }
@@ -195,17 +266,83 @@ async function fetchPage(pageIdx) {
 
 function onTotalUpdate(total) {
   if (store.tab === 'favorites') store.favTotal = total
+  else if (store.tab === 'fs') store.fsTotal = total
   else store.searchTotal = total
 }
 
 function onFilterChange() {
+  // 进入文件系统 Tab 但尚无浏览根时，默认第一个扫描根
+  if (store.tab === 'fs' && !store.fsRoot && store.roots.length) {
+    store.fsRoot = store.roots[0]
+    store.fsRel = ''
+  }
   loadedPages.value = 0
   pageCursors.length = 0
   pageCursors[0] = null
+  fsCursors.length = 0
+  fsCursors[0] = null
   listKey.value++          // 重建 VirtualList（清空页缓存）
   store.selected = null
   store.previewKey++
   refreshStats()
+}
+
+function clearScope() {
+  store.searchScope = null
+  onFilterChange()
+}
+
+/* ---------- 文件系统浏览交互 ---------- */
+
+function enterDir(item) {
+  store.fsRel = item.rel_path
+  store.selected = null
+  store.previewKey++
+  onFilterChange()
+}
+
+function gotoBreadcrumb(idx) {
+  const segs = store.fsRel ? store.fsRel.split('/') : []
+  store.fsRel = segs.slice(0, idx).join('/')
+  store.selected = null
+  store.previewKey++
+  onFilterChange()
+}
+
+function goUp() {
+  if (!store.fsRel) return
+  const segs = store.fsRel.split('/')
+  segs.pop()
+  store.fsRel = segs.join('/')
+  store.selected = null
+  store.previewKey++
+  onFilterChange()
+}
+
+function openFsDir(item) {
+  const root = store.roots.find(r => r.id === item.root_id)
+  if (!root) return
+  store.fsRoot = root
+  store.fsRel = item.rel_path
+  store.tab = 'fs'
+  store.selected = null
+  store.previewKey++
+  onFilterChange()
+}
+
+function enterSearchInDir() {
+  if (!store.fsRoot) return
+  const label = store.fsRoot.display_name || store.fsRoot.path
+  store.searchScope = {
+    root_id: store.fsRoot.id,
+    prefix: store.fsRel || '',
+    label: label + (store.fsRel ? '/' + store.fsRel : ''),
+  }
+  store.q = ''
+  store.tab = 'search'
+  store.selected = null
+  store.previewKey++
+  onFilterChange()
 }
 
 /* ---------- 交互 ---------- */
@@ -221,8 +358,14 @@ function onCellClick(item) {
   store.selected = item
   store.previewKey++
 }
+
 function onCellDbl(item) {
-  if (!item || item.is_dir) return
+  if (!item) return
+  if (item.is_dir) {
+    if (store.tab === 'fs') enterDir(item)
+    else openFsDir(item)
+    return
+  }
   // 双击下载（模拟 Everything 双击打开）
   const a = document.createElement('a')
   a.href = apiFiles.downloadUrl(item.id)
@@ -316,7 +459,7 @@ html, body, #app {
 .main { flex: 1; display: flex; min-height: 0; }
 .list-area { flex: 1; position: relative; min-width: 0; }
 
-/* 扫描根信息条 */
+/* 扫描根信息条 / 面包屑 */
 .rootstrip {
   display: flex; align-items: center; gap: 8px;
   padding: 5px 12px; background: #17191c;
@@ -341,8 +484,30 @@ html, body, #app {
 .rs-btn {
   background: #26282d; border: 1px solid #33363d; color: #9aa0a6;
   border-radius: 5px; padding: 1px 8px; font-size: 11px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
 }
-.rs-btn:hover { color: #e3e6eb; }
+.rs-btn:hover:not(:disabled) { color: #e3e6eb; }
+.rs-btn:disabled { opacity: .4; cursor: default; }
+.rs-btn.accent { color: #6ab0ff; border-color: #3d556e; }
+.rs-btn.accent:hover { background: rgba(76,139,245,.12); }
+.crumb {
+  color: #aab0b8; cursor: pointer; padding: 1px 6px; border-radius: 4px;
+  font-family: Consolas, monospace; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.crumb:hover { background: rgba(255,255,255,.07); color: #fff; }
+.crumb.root { color: #6ab0ff; }
+.scope-tip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: rgba(76,139,245,.12); border: 1px solid #3d556e; color: #6ab0ff;
+  border-radius: 5px; padding: 0 7px; font-size: 11px;
+}
+.scope-clear {
+  background: none; border: none; color: inherit; cursor: pointer;
+  padding: 0 2px; font-size: 10px; opacity: .7;
+}
+.scope-clear:hover { opacity: 1; }
+.st-spacer { flex: 1; }
 
 /* 表格行 */
 .trow {

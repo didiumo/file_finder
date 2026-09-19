@@ -1,6 +1,7 @@
-<!-- 侧边预览面板：文本 / Markdown / 图片 / 视频 -->
+<!-- 侧边预览面板：文本 / Markdown / 图片 / 视频（可拖拽拉伸宽度） -->
 <template>
-  <aside class="preview" :class="{ empty: !store.selected }">
+  <aside class="preview" :class="{ empty: !store.selected }" :style="{ width: store.previewWidth + 'px' }">
+    <div class="pv-resizer" title="拖拽调整宽度" @mousedown="startResize"></div>
     <template v-if="store.selected">
       <div class="pv-head">
         <div class="pv-name" :title="store.selected.rel_path">
@@ -12,8 +13,8 @@
             <Icon name="star" :size="15" />
           </button>
           <button class="abtn" title="复制路径" @click="copyPath"><Icon name="copy" :size="15" /></button>
-          <button class="abtn" title="下载" @click="download"><Icon name="download" :size="15" /></button>
-          <button class="abtn danger" title="删除文件" @click="removeFile"><Icon name="trash" :size="15" /></button>
+          <button class="abtn" :class="{ dis: isDir }" :title="isDir ? '目录不支持下载' : '下载'" @click="download"><Icon name="download" :size="15" /></button>
+          <button class="abtn danger" :class="{ dis: isDir }" :title="isDir ? '目录不可直接删除' : '删除文件'" @click="removeFile"><Icon name="trash" :size="15" /></button>
           <button class="abtn" title="关闭预览" @click="store.showPreview = false; store.selected = null"><Icon name="x" :size="15" /></button>
         </div>
       </div>
@@ -23,8 +24,25 @@
         <span class="root">{{ item.root_name }}</span>
       </div>
       <div class="pv-body">
+        <!-- 目录 -->
+        <template v-if="isDir">
+          <div class="unsupported">
+            <Icon name="folder" :size="56" style="color:#e8c468" />
+            <p>{{ item.indexed === false ? '目录（未索引，实时浏览）' : '目录' }}</p>
+            <p class="ext">{{ item.rel_path || item.root_path }}</p>
+            <p class="tip">双击卡片可进入目录浏览</p>
+          </div>
+        </template>
+        <!-- 未索引文件 -->
+        <template v-else-if="!item.id && item.indexed === false">
+          <div class="unsupported">
+            <Icon name="warn" :size="52" style="color:#d9a53f" />
+            <p>文件未索引</p>
+            <p class="ext">扫描索引中暂无此文件，暂不支持预览</p>
+          </div>
+        </template>
         <!-- 文件已丢失 -->
-        <template v-if="!item.id">
+        <template v-else-if="!item.id">
           <div class="unsupported">
             <Icon name="warn" :size="52" style="color:#d9a53f" />
             <p>文件已丢失或不可访问</p>
@@ -82,7 +100,7 @@ import { marked } from 'marked'
 import Icon from './Icon.vue'
 import { store } from '../store'
 import { formatSize, formatDate } from '../utils/format'
-import { classifyExt, fileIcon, fileColor, previewable } from '../utils/fileTypes'
+import { classifyExt, fileIcon, fileColor } from '../utils/fileTypes'
 import { apiFiles, apiFavorites, fetchTextPreview } from '../api'
 
 const textContent = ref('')
@@ -96,6 +114,7 @@ let controller = null
 const emit = defineEmits(['deleted'])
 
 const item = computed(() => store.selected || {})
+const isDir = computed(() => !!item.value.is_dir)
 const kind = computed(() => classifyExt(item.value.ext))
 const iconName = computed(() => fileIcon(item.value))
 const itemColor = computed(() => fileColor(item.value))
@@ -107,7 +126,7 @@ const previewUrl = computed(() => (item.value.id ? apiFiles.previewUrl(item.valu
 
 watch(() => store.previewKey, async () => {
   const it = item.value
-  if (!it || !it.id) return
+  if (!it || !it.id || it.is_dir) return
   isFav.value = !!it.favorite
   mediaFailed.value = false
   const k = classifyExt(it.ext)
@@ -131,7 +150,7 @@ watch(() => store.previewKey, async () => {
 
 async function toggleFav() {
   const it = item.value
-  if (!it || !it.id) return
+  if (!it || !it.id || it.is_dir) return
   let favorite
   if (it.fav_id && !it.file_id) {
     // 收藏视图且文件丢失：按收藏记录删除
@@ -153,7 +172,7 @@ async function copyPath() {
 }
 
 function download() {
-  if (!item.value.id) return
+  if (!item.value.id || item.value.is_dir) return
   const a = document.createElement('a')
   a.href = apiFiles.downloadUrl(item.value.id)
   a.download = item.value.name
@@ -170,20 +189,52 @@ async function removeFile() {
   emit('deleted')
 }
 
+/* ---------- 拖拽拉伸 ---------- */
+let resizing = false
+let startX = 0
+let startW = 0
+function startResize(e) {
+  resizing = true
+  startX = e.clientX
+  startW = store.previewWidth
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('mousemove', onResize)
+  window.addEventListener('mouseup', stopResize)
+}
+function onResize(e) {
+  if (!resizing) return
+  // 把手在面板左缘：向左拖变宽、向右拖变窄
+  store.previewWidth = Math.max(280, Math.min(720, startW + (startX - e.clientX)))
+}
+function stopResize() {
+  resizing = false
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  window.removeEventListener('mousemove', onResize)
+  window.removeEventListener('mouseup', stopResize)
+}
+
 onBeforeUnmount(() => { controller && controller.abort() })
 </script>
 
 <style scoped>
 .preview {
   width: 380px;
-  min-width: 380px;
+  min-width: 280px;
   border-left: 1px solid #2e3137;
   background: #222428;
   display: flex;
   flex-direction: column;
   height: 100%;
+  position: relative;
 }
 .preview.empty { align-items: center; justify-content: center; }
+.pv-resizer {
+  position: absolute; left: -3px; top: 0; bottom: 0;
+  width: 6px; cursor: col-resize; z-index: 10;
+}
+.pv-resizer:hover { background: rgba(76,139,245,.35); }
 .pv-placeholder { color: #5c626d; text-align: center; }
 .pv-placeholder p { margin-top: 10px; font-size: 13px; }
 .pv-head {
@@ -200,6 +251,8 @@ onBeforeUnmount(() => { controller && controller.abort() })
 .abtn:hover { background: rgba(255,255,255,.08); color: #e3e6eb; }
 .abtn.on { color: #f5b942; }
 .abtn.danger:hover { color: #e05c5c; }
+.abtn.dis { opacity: .35; cursor: default; }
+.abtn.dis:hover { background: none; color: #9aa0a6; }
 .pv-meta { display: flex; gap: 10px; padding: 0 12px 8px; font-size: 11px; color: #8b919a; }
 .pv-meta .root { color: #6c727c; }
 .pv-body { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 12px; }
@@ -223,7 +276,8 @@ onBeforeUnmount(() => { controller && controller.abort() })
 .video { width: 100%; max-height: 100%; border-radius: 6px; background: #000; }
 .unsupported { text-align: center; color: #8b919a; padding-top: 40px; }
 .unsupported p { margin: 10px 0 0; font-size: 13px; }
-.unsupported .ext { font-size: 11px; color: #6c727c; }
+.unsupported .ext { font-size: 11px; color: #6c727c; word-break: break-all; }
+.unsupported .tip { font-size: 11.5px; color: #6ab0ff; margin-top: 8px; }
 .pprim {
   margin-top: 16px; display: inline-flex; align-items: center; gap: 6px;
   background: #3d78e6; color: #fff; border: none; padding: 7px 16px;
