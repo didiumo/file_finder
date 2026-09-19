@@ -77,7 +77,7 @@ function fetchAndCache(page) {
   inflight.set(page, p)
 }
 
-// 局部数据变更：从已缓存页移除 ids，删除点之后的页失效重拉，不重建整个列表
+// 局部数据变更：删除点之后的页失效重拉，不重建整个列表
 // totalHint 可选：直接更新总数（后端返回的实际变化数，含目录子树）
 function removeAndRefresh(ids, totalHint) {
   const set = new Set(ids)
@@ -85,7 +85,6 @@ function removeAndRefresh(ids, totalHint) {
   for (const [page, items] of pages) {
     if (items.some(it => it && set.has(it.id))) {
       if (page < firstAffected) firstAffected = page
-      pages.set(page, items.filter(it => !(it && set.has(it.id))))
     }
   }
   mutationSeq++
@@ -96,12 +95,12 @@ function removeAndRefresh(ids, totalHint) {
     version.value++
     return
   }
-  // 删除点之后的页数据整体前移，缓存失效（滚动到时重新拉取）
-  for (const page of [...pages.keys()]) if (page > firstAffected) pages.delete(page)
+  // 删除点页及其之后全部失效重拉：数据整体前移，逐页剔除会在页内留下空洞（空白卡片）
+  for (const page of [...pages.keys()]) if (page >= firstAffected) pages.delete(page)
   inflight.clear()
   if (typeof totalHint === 'number') emit('total-update', totalHint)
   version.value++
-  fetchAndCache(firstAffected)   // 重拉删除点页：最新数据 + 总数修正
+  fetchAndCache(firstAffected)   // 重拉删除点页：最新数据 + 补位 + 总数修正
 }
 
 // 整体清空（如清空回收站）
