@@ -4,7 +4,7 @@ import os
 import sys
 import urllib.request
 
-BASE = "http://localhost:8010/api/file_finder"
+BASE = "http://127.0.0.1:8000/api/file_finder"
 H = {"Accept": "application/json"}
 
 
