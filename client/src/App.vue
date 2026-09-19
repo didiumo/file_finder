@@ -170,6 +170,17 @@
       </button>
     </div>
 
+    <div v-if="confirmBox" class="ff-modal-mask" @mousedown.self="confirmCancel">
+      <div class="ff-modal" role="dialog" aria-modal="true">
+        <div class="ff-modal-title">{{ confirmBox.title }}</div>
+        <div class="ff-modal-msg">{{ confirmBox.message }}</div>
+        <div class="ff-modal-actions">
+          <button class="st-btn" @click="confirmCancel">取消</button>
+          <button class="st-btn danger" @click="confirmOk">{{ confirmBox.danger ? '删除' : '确定' }}</button>
+        </div>
+      </div>
+    </div>
+
     <RootManager :open="showRoots" @close="showRoots = false" @task="trackTask" />
     <CollectDialog :open="showCollect" @close="showCollect = false" @task="trackTask" @done="onFilterChange" />
   </div>
@@ -691,16 +702,36 @@ async function batchRestore() {
   clearSelection()
   onFilterChange()
 }
+/* ---------- 自定义确认对话框（替代原生 confirm） ---------- */
+const confirmBox = ref(null)   // { title, message, danger, resolve }
+function askConfirm(title, message, danger = false) {
+  return new Promise(resolve => {
+    confirmBox.value = { title, message, danger, resolve }
+  })
+}
+function confirmOk() {
+  const c = confirmBox.value
+  confirmBox.value = null
+  if (c) c.resolve(true)
+}
+function confirmCancel() {
+  const c = confirmBox.value
+  confirmBox.value = null
+  if (c) c.resolve(false)
+}
+
 async function batchPurge() {
   const items = selectedItems()
   if (!items.length) return
-  if (!confirm(`彻底删除 ${items.length} 项？此操作不可恢复（回收站文件将从磁盘移除）`)) return
+  const ok = await askConfirm('彻底删除', `确定彻底删除 ${items.length} 项？文件将从磁盘移除，此操作不可恢复。`, true)
+  if (!ok) return
   await apiTrash.purge(items.map(i => i.id))
   clearSelection()
   onFilterChange()
 }
 async function trashEmpty() {
-  if (!confirm('清空回收站？所有条目将被彻底删除（磁盘文件同时移除），不可恢复')) return
+  const ok = await askConfirm('清空回收站', '回收站将被清空，所有条目彻底删除（磁盘文件同时移除），此操作不可恢复。', true)
+  if (!ok) return
   await apiTrash.empty()
   clearSelection()
   onFilterChange()
@@ -722,7 +753,8 @@ async function onToggleFav(item) {
 }
 
 async function pruneMissing() {
-  if (!confirm('清除所有磁盘上已不存在的收藏记录？')) return
+  const ok = await askConfirm('清除失效收藏', '将清除所有磁盘上已不存在的收藏记录。', true)
+  if (!ok) return
   await apiFavorites.pruneMissing()
   onFilterChange()
 }
@@ -948,4 +980,20 @@ html, body, #app {
   background: rgba(76,139,245,.14); border: 1px solid #3d78e6;
   border-radius: 2px;
 }
+
+/* 自定义确认对话框 */
+.ff-modal-mask {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center;
+}
+.ff-modal {
+  background: #26282e; border: 1px solid #3a3d44; border-radius: 10px;
+  padding: 18px 20px; width: 400px; max-width: 92vw;
+  box-shadow: 0 12px 40px rgba(0,0,0,.6);
+}
+.ff-modal-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+.ff-modal-msg { font-size: 13px; color: #b8bdc6; line-height: 1.6; margin-bottom: 16px; }
+.ff-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.ff-modal-actions .st-btn { min-width: 72px; }
 </style>
