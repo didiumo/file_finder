@@ -59,8 +59,8 @@ const canvasHeight = computed(() => rows.value * props.rowHeight)
 
 const pageOf = idx => Math.floor(idx / props.pageSize)
 
-function fetchAndCache(page) {
-  if (pages.has(page) || inflight.has(page)) return
+function fetchAndCache(page, force) {
+  if (!force && (pages.has(page) || inflight.has(page))) return
   const seq = mutationSeq
   const p = Promise.resolve(props.fetchPage(page))
     .then(res => {
@@ -77,7 +77,9 @@ function fetchAndCache(page) {
   inflight.set(page, p)
 }
 
-// 局部数据变更：删除点之后的页失效重拉，不重建整个列表
+// 局部数据变更：链式补位，删除瞬间不闪烁、翻页无空洞
+// 删除点页移除被删项，后续每页首项逐页前移补位（已加载页全部保留渲染）；
+// 仅当补位链尾仍有缺口（其后的数据尚未加载）时，才让最后一段失效，滚动到时重拉。
 // totalHint 可选：直接更新总数（后端返回的实际变化数，含目录子树）
 function removeAndRefresh(ids, totalHint) {
   const set = new Set(ids)
@@ -95,12 +97,41 @@ function removeAndRefresh(ids, totalHint) {
     version.value++
     return
   }
-  // 删除点页及其之后全部失效重拉：数据整体前移，逐页剔除会在页内留下空洞（空白卡片）
-  for (const page of [...pages.keys()]) if (page >= firstAffected) pages.delete(page)
+  const sorted = [...pages.keys()].sort((a, b) => a - b)
+  const affected = sorted.filter(p => p >= firstAffected)
+  let deficit = 0   // 当前页需要从后续页补位的项数
+  for (let i = 0; i < affected.length; i++) {
+    const page = affected[i]
+    const items = pages.get(page) || []
+    const kept = items.filter(it => !(it && set.has(it.id)))
+    if (deficit > 0) {
+      const take = Math.min(deficit, kept.length)
+      if (take > 0) {
+        const prev = pages.get(page - 1)
+        if (prev) {
+          for (let t = 0; t < take; t++) prev.push(kept.shift())
+          deficit -= take
+        }
+      }
+    }
+    deficit += (items.length - kept.length)   // 本页被删项数
+    pages.set(page, kept)
+    // 补位链断裂（下一页不在缓存中）且仍有缺口：从本页起之后全部失效，滚动时重拉
+    if (deficit > 0 && !pages.has(page + 1) && i < affected.length - 1) {
+      for (const p of affected.slice(i)) pages.delete(p)
+      deficit = 0
+      break
+    }
+  }
+  // 链尾仍有缺口（后续数据未加载）：保留该页现有数据渲染（删除瞬间不闪烁），
+  // 强制重拉补齐尾部缺口（响应返回后自动替换为前移后的完整数据）
+  if (deficit > 0) {
+    const lastAffected = affected[affected.length - 1]
+    fetchAndCache(lastAffected, true)
+  }
   inflight.clear()
   if (typeof totalHint === 'number') emit('total-update', totalHint)
   version.value++
-  fetchAndCache(firstAffected)   // 重拉删除点页：最新数据 + 补位 + 总数修正
 }
 
 // 整体清空（如清空回收站）
@@ -159,14 +190,9 @@ function cellStyle(cell) {
 }
 
 function onScroll() {
-  if (onScroll.raf) return
-  onScroll.raf = requestAnimationFrame(() => {
-    onScroll.raf = 0
-    if (viewportEl.value) {
-      scrollTop.value = viewportEl.value.scrollTop
-      viewportH.value = viewportEl.value.clientHeight
-    }
-  })
+  if (!viewportEl.value) return
+  scrollTop.value = viewportEl.value.scrollTop
+  viewportH.value = viewportEl.value.clientHeight
 }
 
 function reset() {
