@@ -51,8 +51,9 @@
         <option v-for="r in store.roots" :key="r.id" :value="r.id" :title="r.path">{{ r.display_name || r.path }}</option>
       </select>
 
-      <select v-model="store.ext" class="sel" title="扩展名过滤" @change="onFilterChange">
+      <select v-model="store.ext" class="sel" title="类型过滤" @change="onFilterChange">
         <option value="">全部类型</option>
+        <option value="__dirs__">📁 文件夹</option>
         <optgroup label="媒体">
           <option value="png,jpg,jpeg,gif,webp,bmp,svg,ico,avif,tif,tiff">图片</option>
           <option value="mp4,mkv,webm,mov,avi,flv,wmv,m4v,mpg,mpeg,3gp,ts,m2ts,ogv,rmvb">视频</option>

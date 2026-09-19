@@ -292,7 +292,7 @@ async function fetchPage(pageIdx) {
   if (store.tab === 'favorites') {
     const p = {
       q: store.q, root_id: store.rootId, sort: store.sort === 'name' ? 'name' : store.sort,
-      order: store.order,
+      order: store.order, ext: store.ext,
       page: pageIdx + 1, page_size: pageSize,
     }
     for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]

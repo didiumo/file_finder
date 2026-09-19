@@ -197,12 +197,13 @@ async def setup_api_router(ctx) -> APIRouter:
         sort: str = Query("created_at"),
         order: str = Query("desc"),
         only_exists: Optional[bool] = Query(None),
+        ext: Optional[str] = Query(None),
         page: int = Query(1),
         page_size: int = Query(300),
     ):
         return res2.data(
             await favorites.list_favorites(q, sort, order, page, page_size,
-                                           root_id=root_id, only_exists=only_exists),
+                                           root_id=root_id, only_exists=only_exists, ext=ext),
             request=request,
         )
 

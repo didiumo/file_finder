@@ -68,6 +68,13 @@ ok &= check("search finds clip.mp4", "clip.mp4" in files)
 ok &= check("search finds sub/inner.txt", any(i["name"] == "inner.txt" for i in s["data"]["items"]))
 ok &= check("sandbox total=13", s["data"]["total"] == 13, f"total={s['data']['total']}")
 
+# 1b. 文件夹类型过滤（__dirs__）
+st, d = req("GET", "/search?root_id=3&ext=__dirs__&page_size=200")
+ok &= check("dirs filter total", d["data"]["total"] == 2, f"total={d['data']['total']}")
+ok &= check("dirs filter all dirs",
+            len(d["data"]["items"]) == 2 and all(i["is_dir"] for i in d["data"]["items"]),
+            f"items={[(i['name'], i['is_dir']) for i in d['data']['items']]}")
+
 # 2. 文本预览
 st, text = req("GET", "/files/" + str(files["readme.md"]["id"]) + "/preview")
 ok &= check("md preview is text", "markdown" in text, f"status={st}")

@@ -101,10 +101,14 @@ class SearchLogic:
         if not include_dirs:
             where.append("f.is_dir = 0")
         if ext:
-            exts = [e.strip().lstrip(".").lower() for e in ext.split(",") if e.strip()]
-            if exts:
-                where.append(f"f.ext IN ({','.join('?' * len(exts))})")
-                params.extend(exts)
+            if str(ext).strip().lower() in ("__dirs__", "dirs"):
+                # 特殊类型「文件夹」：只显示目录
+                where.append("f.is_dir = 1")
+            else:
+                exts = [e.strip().lstrip(".").lower() for e in ext.split(",") if e.strip()]
+                if exts:
+                    where.append(f"f.ext IN ({','.join('?' * len(exts))})")
+                    params.extend(exts)
         if size_min is not None:
             where.append("f.size >= ?")
             params.append(size_min)

@@ -129,6 +129,7 @@ class FavoriteLogic:
         page_size: int = 300,
         root_id: Optional[int] = None,
         only_exists: Optional[bool] = None,
+        ext: Optional[str] = None,
     ) -> Dict[str, Any]:
         where: List[str] = []
         params: List[Any] = []
@@ -142,6 +143,15 @@ class FavoriteLogic:
         if root_id is not None:
             where.append("fa.root_id = ?")
             params.append(root_id)
+        if ext:
+            if str(ext).strip().lower() in ("__dirs__", "dirs"):
+                # 特殊类型「文件夹」：目录的扩展名快照为空
+                where.append("fa.ext = ''")
+            else:
+                exts = [e.strip().lstrip(".").lower() for e in ext.split(",") if e.strip()]
+                if exts:
+                    where.append(f"fa.ext IN ({','.join('?' * len(exts))})")
+                    params.extend(exts)
         if only_exists is True:
             where.append("f.id IS NOT NULL")
         elif only_exists is False:
