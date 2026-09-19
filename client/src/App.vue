@@ -421,10 +421,13 @@ function onTotalUpdate(total) {
 }
 
 function onFilterChange() {
-  // 进入文件系统 Tab 但尚无浏览根时，默认第一个扫描根
-  if (store.tab === 'fs' && !store.fsRoot && store.roots.length) {
-    store.fsRoot = store.roots[0]
-    store.fsRel = ''
+  // 文件系统 Tab：无浏览根或根已被删除时，重置为第一个扫描根
+  if (store.tab === 'fs') {
+    const still = store.roots.find(r => r.id === (store.fsRoot && store.fsRoot.id))
+    if (!still || !store.fsRoot) {
+      store.fsRoot = store.roots[0] || null
+      store.fsRel = ''
+    }
   }
   loadedPages.value = 0
   pageCursors.length = 0

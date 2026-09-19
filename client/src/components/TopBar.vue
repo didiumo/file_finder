@@ -93,6 +93,13 @@
       </label>
     </div>
 
+    <div v-if="store.tab === 'fs'" class="filters">
+      <select class="sel" title="扫描根（文件系统浏览）" @change="onFsRootChange">
+        <option v-for="r in store.roots" :key="r.id" :value="r.id" :selected="store.fsRoot && store.fsRoot.id === r.id" :title="r.path">{{ r.display_name || r.path }}</option>
+      </select>
+      <button class="ord-btn" title="刷新当前目录" @click="$emit('refresh')"><Icon name="refresh" :size="13" /></button>
+    </div>
+
     <div class="view-actions">
       <div class="view-group" title="视图模式">
         <button v-for="m in viewModes" :key="m.key" class="vm" :class="{ on: store.viewMode === m.key }"
@@ -171,6 +178,15 @@ function switchTab(t) {
   store.tab = t
   store.selected = null
   store.previewKey++
+  emit('filter-change')
+}
+function onFsRootChange(e) {
+  const id = Number(e.target.value)
+  const root = store.roots.find(r => r.id === id)
+  if (root) {
+    store.fsRoot = root   // 切换浏览根，App 端重置 fsRel 并刷新
+    store.fsRel = ''
+  }
   emit('filter-change')
 }
 </script>
