@@ -136,6 +136,17 @@ function reset() {
   inflight.clear()
   version.value++
 }
+function getScrollTop() {
+  return viewportEl.value ? viewportEl.value.scrollTop : 0
+}
+// 程序化定位：同步内部状态（scroll 事件不会因赋值触发），立即重算渲染区间并加载缺失页
+function scrollTo(y) {
+  if (!viewportEl.value) return
+  viewportEl.value.scrollTop = y
+  scrollTop.value = y
+  viewportH.value = viewportEl.value.clientHeight
+  version.value++
+}
 
 let ro = null
 onMounted(() => {
@@ -157,7 +168,7 @@ watch(() => props.total, () => { version.value++ })
 function getCells() {
   return [...cellRefs.values()].filter(c => c.el && c.item)
 }
-defineExpose({ reset, pages, scrollTo: (y) => { if (viewportEl.value) viewportEl.value.scrollTop = y }, getCells })
+defineExpose({ reset, pages, scrollTo, getScrollTop, getCells })
 </script>
 
 <style scoped>

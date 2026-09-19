@@ -187,7 +187,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount , nextTick } from 'vue'
 import TopBar from './components/TopBar.vue'
 import VirtualList from './components/VirtualList.vue'
 import FileCard from './components/FileCard.vue'
@@ -439,6 +439,12 @@ function onFilterChange() {
   clearSelection()
   store.previewKey++
   refreshStats()
+  // 内容微变（删除/收藏/恢复等）时恢复滚动位置，避免跳回顶部
+  if (keepPos) {
+    keepPos = false
+    const target = preservePos
+    nextTick(() => { if (target && listRef.value) listRef.value.scrollTo(target) })
+  }
 }
 
 function clearScope() {
@@ -672,10 +678,19 @@ function runCtx(key) {
   }
 }
 
+/* ---------- 保持滚动位置（内容微变不跳顶） ---------- */
+let preservePos = 0
+let keepPos = false
+function markKeepPos() {
+  preservePos = listRef.value ? listRef.value.getScrollTop() : 0
+  keepPos = true
+}
+
 /* ---------- 批量操作 ---------- */
 async function batchFav() {
   const items = selectedItems().filter(i => !i.fav_id && i.id)
   if (!items.length) return
+  markKeepPos()
   for (const it of items) {
     try { await apiFavorites.toggle(it.id) } catch { /* 单条失败继续 */ }
   }
@@ -692,6 +707,7 @@ async function batchDelete() {
   if (withId.length !== items.length) {
     alert(`${items.length - withId.length} 项未索引，无法删除；将删除其余 ${withId.length} 项`)
   }
+  markKeepPos()
   // 移入回收站可随时恢复，不做二次确认（高频操作）
   await apiFiles.batchDelete(withId.map(i => i.id))
   clearSelection()
@@ -700,6 +716,7 @@ async function batchDelete() {
 async function batchRestore() {
   const items = selectedItems()
   if (!items.length) return
+  markKeepPos()
   const r = await apiTrash.restore(items.map(i => i.id))
   alert(`已恢复 ${r.data.restored} 项` + (r.data.errors?.length ? `；${r.data.errors.length} 项失败（目标位置已存在同名文件）` : ''))
   clearSelection()
@@ -728,6 +745,7 @@ async function batchPurge() {
   if (!items.length) return
   const ok = await askConfirm('彻底删除', `确定彻底删除 ${items.length} 项？文件将从磁盘移除，此操作不可恢复。`, true)
   if (!ok) return
+  markKeepPos()
   await apiTrash.purge(items.map(i => i.id))
   clearSelection()
   onFilterChange()
@@ -735,6 +753,7 @@ async function batchPurge() {
 async function trashEmpty() {
   const ok = await askConfirm('清空回收站', '回收站将被清空，所有条目彻底删除（磁盘文件同时移除），此操作不可恢复。', true)
   if (!ok) return
+  markKeepPos()
   await apiTrash.empty()
   clearSelection()
   onFilterChange()
@@ -744,6 +763,7 @@ async function onToggleFav(item) {
   if (!item) return
   if (store.tab === 'favorites') {
     if (item.fav_id) {
+      markKeepPos()
       await apiFavorites.remove(item.fav_id)
       onFilterChange()
     }
@@ -758,6 +778,7 @@ async function onToggleFav(item) {
 async function pruneMissing() {
   const ok = await askConfirm('清除失效收藏', '将清除所有磁盘上已不存在的收藏记录。', true)
   if (!ok) return
+  markKeepPos()
   await apiFavorites.pruneMissing()
   onFilterChange()
 }
