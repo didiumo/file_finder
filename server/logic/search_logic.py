@@ -62,6 +62,8 @@ class SearchLogic:
         after_name: Optional[Any] = None,
         after_size: Optional[int] = None,
         after_mtime: Optional[float] = None,
+        after_ext: Optional[str] = None,
+        after_path: Optional[str] = None,
         after_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         where: List[str] = []
@@ -160,11 +162,18 @@ class SearchLogic:
                 "next_cursor": None,
             }
 
-        sort_col = {"name": "f.name", "size": "f.size", "mtime": "f.mtime"}.get(sort, "f.name")
+        sort_col = {
+            "name": "f.name", "size": "f.size", "mtime": "f.mtime",
+            "ext": "f.ext", "path": "f.rel_path",
+        }.get(sort, "f.name")
+        sort_field = {"name": "name", "size": "size", "mtime": "mtime", "ext": "ext", "path": "rel_path"}.get(sort, "name")
         order_sql = "DESC" if str(order).lower() == "desc" else "ASC"
 
         # 游标分页：跳过 OFFSET 全扫描，深翻页 O(页大小)
-        after_val = {"name": after_name, "size": after_size, "mtime": after_mtime}.get(sort)
+        after_val = {
+            "name": after_name, "size": after_size, "mtime": after_mtime,
+            "ext": after_ext, "path": after_path,
+        }.get(sort)
         offset = None
         if after_val is not None and after_id is not None:
             if order_sql == "ASC":
@@ -194,7 +203,7 @@ class SearchLogic:
         items = [self._to_item(dict(r)) for r in rows]
         next_cursor = None
         if items:
-            next_cursor = {f"after_{sort}": items[-1][sort], "after_id": items[-1]["id"]}
+            next_cursor = {f"after_{sort}": items[-1][sort_field], "after_id": items[-1]["id"]}
         return {
             "total": int(total or 0),
             "page": page,

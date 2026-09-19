@@ -54,6 +54,7 @@ class FsLogic:
         sort: str = "name",
         order: str = "asc",
         after_dir: Optional[int] = None,
+        after_sort_val: Optional[Any] = None,
         after_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         resolved = await self._resolve_root(path)
@@ -77,26 +78,36 @@ class FsLogic:
         except OSError as e:
             raise ValueError(f"无法读取目录：{e}")
 
-        # 目录优先 + 名称排序（降序时目录仍在前，名称反向）
+        # 目录优先 + 排序字段（name/size/mtime；降序时目录块与文件块各自反向）
         desc = str(order).lower() == "desc"
-        entries.sort(key=lambda x: (0 if x[1] else 1, x[0].lower()))
+        sort_field = {"name": 0, "size": 2, "mtime": 3}.get(sort, 0)
+
+        def sort_fn(e):
+            return (0 if e[1] else 1, e[sort_field], e[0].lower())
+
+        entries.sort(key=sort_fn)
         if desc:
-            # 保持目录在前：目录块内部按名称降序，文件块内部按名称降序
-            dirs = sorted([x for x in entries if x[1]], key=lambda x: x[0].lower(), reverse=True)
-            files = sorted([x for x in entries if not x[1]], key=lambda x: x[0].lower(), reverse=True)
+            dirs = sorted([x for x in entries if x[1]], key=lambda x: (x[sort_field], x[0].lower()), reverse=True)
+            files = sorted([x for x in entries if not x[1]], key=lambda x: (x[sort_field], x[0].lower()), reverse=True)
             entries = dirs + files
 
         total = len(entries)
         page = max(1, int(page))
         page_size = max(1, min(2000, int(page_size)))
 
-        # 键集分页（目录优先排序下的 (is_dir, name) 游标）
+        # 键集分页（目录优先排序下的 (is_dir, sort_val, name) 游标）
         if after_name is not None:
             after_dir_b = bool(int(after_dir or 0))
+            if sort_field == 0:
+                a_val = (after_sort_val or "").lower()
+            elif sort_field == 2:
+                a_val = int(after_sort_val or 0)
+            else:
+                a_val = float(after_sort_val or 0)
             start = None
-            for i, (nm, is_dir, _, _) in enumerate(entries):
-                k = (0 if is_dir else 1, nm.lower())
-                a = (0 if after_dir_b else 1, after_name.lower())
+            for i, (nm, is_dir, sz, mt) in enumerate(entries):
+                k = (0 if is_dir else 1, (nm if sort_field == 0 else (sz if sort_field == 2 else mt)), nm.lower())
+                a = (0 if after_dir_b else 1, a_val, after_name.lower())
                 if k > a:
                     start = i
                     break
@@ -131,7 +142,8 @@ class FsLogic:
         next_cursor = None
         if items and start + len(items) < total:
             last = items[-1]
-            next_cursor = {"after_dir": 1 if last["is_dir"] else 0, "after_name": last["name"]}
+            sv = last["name"] if sort_field == 0 else (last["size"] if sort_field == 2 else last["mtime"])
+            next_cursor = {"after_dir": 1 if last["is_dir"] else 0, "after_sort_val": sv, "after_name": last["name"]}
 
         return {
             "path": os.path.abspath(path),

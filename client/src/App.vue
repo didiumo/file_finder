@@ -49,9 +49,24 @@
 
     <div class="main">
       <div class="list-area">
+        <!-- 表格表头：列标题 + 排序 + 可拖拽列宽 -->
+        <div v-if="isTable" class="tbl-head">
+          <div class="th th-ic"></div>
+          <div v-for="col in tableColsDef" :key="col.key" class="th"
+               :class="{ sortable: colSortable(col.key), on: store.sort === col.key }"
+               :style="colStyle(col)"
+               :title="colSortable(col.key) ? '点击排序' : ''"
+               @click="colSortable(col.key) && onSortHead(col.key)">
+            <span class="th-label">{{ col.label }}</span>
+            <span v-if="store.sort === col.key" class="th-arrow">{{ store.order === 'asc' ? '↑' : '↓' }}</span>
+            <span v-if="!col.flex" class="th-res" @mousedown.stop="startColDrag(col.key, $event)"></span>
+          </div>
+          <div class="th th-fav"></div>
+        </div>
         <VirtualList
           ref="listRef"
           :key="listKey"
+          :head-height="isTable ? 31 : 0"
           :total="activeTotal"
           :page-size="pageSize"
           :fetch-page="fetchPage"
@@ -62,18 +77,19 @@
           @total-update="onTotalUpdate"
         >
           <template #item="{ item, index }">
-            <!-- 表格视图 -->
+            <!-- 表格视图（列宽与表头一致，可随表头拖拽调整） -->
             <div v-if="isTable" class="trow" :class="{ sel: selectedId(item) }"
                  @click="onCellClick(item)" @dblclick="onCellDbl(item)">
-              <span class="t-ic" :style="{ color: item && itemColor(item) }">
+              <span class="t-ic" :style="{ color: item && itemColor(item), width: 26 }">
                 <Icon v-if="item" :name="iconOf(item)" :size="15" />
               </span>
-              <span class="t-name" :title="item && item.rel_path">{{ item ? item.name : '' }}</span>
-              <span class="t-ext">{{ item ? (item.ext || (item.is_dir ? '目录' : '—')) : '' }}</span>
-              <span class="t-size">{{ item ? formatSize(item.size) : '' }}</span>
-              <span class="t-date">{{ item ? formatDate(item.mtime) : '' }}</span>
-              <span class="t-path" :title="item && item.root_path">{{ item ? item.root_path : '' }}</span>
-              <span class="t-fav">
+              <span class="t-name" :style="colStyle({ key: 'name' })"
+                    :title="item ? (item.rel_path || item.name) : ''">{{ item ? item.name : '' }}</span>
+              <span class="t-ext" :style="colStyle({ key: 'ext' })">{{ item ? (item.ext || (item.is_dir ? '目录' : '—')) : '' }}</span>
+              <span class="t-size" :style="colStyle({ key: 'size' })">{{ item ? formatSize(item.size) : '' }}</span>
+              <span class="t-date" :style="colStyle({ key: 'mtime' })">{{ item ? formatDate(item.mtime) : '' }}</span>
+              <span class="t-path" style="flex:1 1 0; min-width:80px" :title="item && item.root_path">{{ item ? item.root_path : '' }}</span>
+              <span class="t-fav" :style="{ width: 24 }">
                 <Icon v-if="item && (item.favorite || item.fav_id)" name="star" :size="13" style="color:#f5b942" />
               </span>
               <span v-if="item && item.exists_now === false" class="t-miss">丢失</span>
@@ -141,7 +157,7 @@ import TaskBar from './components/TaskBar.vue'
 import RootManager from './components/RootManager.vue'
 import CollectDialog from './components/CollectDialog.vue'
 import Icon from './components/Icon.vue'
-import { store, viewCfg } from './store'
+import { store, viewCfg, tableCols, saveTableCols } from './store'
 import { trackTask } from './tasks'
 import { apiSearch, apiFavorites, apiRoots, apiStats, apiFiles, apiFs } from './api'
 import { formatSize, formatDate } from './utils/format'
@@ -149,6 +165,58 @@ import { fileIcon, fileColor } from './utils/fileTypes'
 
 const pageSize = 300
 const listRef = ref(null)
+
+/* ---------- 表格视图：列定义 / 排序 / 列宽拖拽 ---------- */
+const tableColsDef = [
+  { key: 'name', label: '名称' },
+  { key: 'ext', label: '类型' },
+  { key: 'size', label: '大小' },
+  { key: 'mtime', label: '修改时间' },
+  { key: 'path', label: '路径', flex: true },
+]
+const colKey = (k) => (k === 'mtime' ? 'date' : k)
+const COL_MIN = { name: 140, ext: 50, size: 70, date: 110 }
+function colStyle(col) {
+  if (col.flex) return { flex: '1 1 0', minWidth: '80px' }
+  const key = colKey(col.key)
+  return { flex: `0 1 ${tableCols[key]}px`, minWidth: (COL_MIN[key] || 60) + 'px' }
+}
+function colSortable(key) {
+  if (store.tab === 'fs') return ['name', 'size', 'mtime'].includes(key)
+  if (store.tab === 'favorites') return ['name', 'size', 'mtime'].includes(key)
+  return ['name', 'ext', 'size', 'mtime', 'path'].includes(key)
+}
+function onSortHead(key) {
+  if (!colSortable(key)) return
+  if (store.sort === key) store.order = store.order === 'asc' ? 'desc' : 'asc'
+  else { store.sort = key; store.order = 'asc' }
+  onFilterChange()
+}
+let dragCol = null
+let dragStartX = 0
+let dragStartW = 0
+function startColDrag(key, e) {
+  dragCol = key
+  dragStartX = e.clientX
+  dragStartW = tableCols[colKey(key)]
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('mousemove', onColDrag)
+  window.addEventListener('mouseup', stopColDrag)
+  e.preventDefault()
+}
+function onColDrag(e) {
+  if (!dragCol) return
+  tableCols[colKey(dragCol)] = Math.max(60, Math.min(900, dragStartW + (e.clientX - dragStartX)))
+}
+function stopColDrag() {
+  dragCol = null
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  window.removeEventListener('mousemove', onColDrag)
+  window.removeEventListener('mouseup', stopColDrag)
+  saveTableCols()
+}
 const taskBarRef = ref(null)
 const showRoots = ref(false)
 const showCollect = ref(false)
@@ -223,7 +291,8 @@ async function fetchPage(pageIdx) {
   loadedPages.value = Math.max(loadedPages.value, pageIdx + 1)
   if (store.tab === 'favorites') {
     const p = {
-      q: store.q, root_id: store.rootId, sort: store.sort, order: store.order,
+      q: store.q, root_id: store.rootId, sort: store.sort === 'name' ? 'name' : store.sort,
+      order: store.order,
       page: pageIdx + 1, page_size: pageSize,
     }
     for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]
@@ -245,8 +314,8 @@ async function fetchPage(pageIdx) {
       path: fsAbsPath(),
       page: pageIdx + 1,
       page_size: pageSize,
-      sort: 'name',
-      order: 'asc',
+      sort: store.sort,
+      order: store.order,
       ...(cursor || {}),
     }
     const r = await apiFs.list(p)
@@ -509,7 +578,28 @@ html, body, #app {
 .scope-clear:hover { opacity: 1; }
 .st-spacer { flex: 1; }
 
-/* 表格行 */
+/* 表格表头 */
+.tbl-head {
+  position: absolute; top: 0; left: 0; right: 0; height: 31px;
+  display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  background: #1a1c1f; border-bottom: 1px solid #2e3137;
+  font-size: 11.5px; color: #8b919a; user-select: none; z-index: 6;
+}
+.th { display: flex; align-items: center; gap: 4px; height: 100%; position: relative; flex: 0 0 auto; }
+.th-ic { width: 26px; flex: 0 0 26px; }
+.th-fav { width: 24px; flex: 0 0 24px; }
+.th.sortable { cursor: pointer; }
+.th.sortable:hover { color: #e3e6eb; }
+.th.on { color: #6ab0ff; }
+.th-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.th-arrow { font-size: 11px; }
+.th-res {
+  position: absolute; right: -5px; top: 0; bottom: 0; width: 10px;
+  cursor: col-resize; z-index: 2;
+}
+.th-res:hover { background: rgba(76,139,245,.35); }
+
+/* 表格行（列宽与表头一致） */
 .trow {
   display: flex; align-items: center; gap: 8px;
   height: 100%; padding: 0 10px;
@@ -519,13 +609,13 @@ html, body, #app {
 }
 .trow:hover { background: rgba(255,255,255,.04); }
 .trow.sel { background: rgba(76,139,245,.16); }
-.t-ic { width: 20px; display: flex; flex-shrink: 0; }
-.t-name { flex: 2.2; overflow: hidden; text-overflow: ellipsis; color: #e3e6eb; }
-.t-ext { flex: .6; color: #8b919a; font-size: 11.5px; }
-.t-size { flex: .8; color: #8b919a; text-align: right; }
-.t-date { flex: 1.1; color: #8b919a; font-size: 11.5px; }
-.t-path { flex: 1.8; color: #6c727c; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
-.t-fav { width: 18px; display: flex; flex-shrink: 0; }
+.t-ic { width: 26px; flex: 0 0 26px; display: flex; }
+.t-name { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; color: #e3e6eb; }
+.t-ext { flex: 0 0 auto; color: #8b919a; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.t-size { flex: 0 0 auto; color: #8b919a; text-align: right; }
+.t-date { flex: 0 0 auto; color: #8b919a; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.t-path { flex: 1 1 0; color: #6c727c; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.t-fav { width: 24px; flex: 0 0 24px; display: flex; }
 .t-miss { font-size: 10px; color: #fff; background: #e05c5c; border-radius: 4px; padding: 0 5px; line-height: 16px; flex-shrink: 0; }
 
 .empty-tip {

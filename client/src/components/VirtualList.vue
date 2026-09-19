@@ -107,7 +107,8 @@ function cellStyle(cell) {
     position: 'absolute',
     top: cell.row * props.rowHeight + 'px',
     left: cell.col * props.colWidth + 'px',
-    width: props.colWidth + 'px',
+    // 表格模式（grid=false）：行宽 = 视口宽，列由内部 flex 布局分配
+    width: (props.grid ? props.colWidth : viewportW.value) + 'px',
     height: props.rowHeight + 'px',
   }
 }

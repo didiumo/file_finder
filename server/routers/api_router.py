@@ -115,6 +115,8 @@ async def setup_api_router(ctx) -> APIRouter:
         after_name: Optional[str] = Query(None),
         after_size: Optional[int] = Query(None),
         after_mtime: Optional[float] = Query(None),
+        after_ext: Optional[str] = Query(None),
+        after_path: Optional[str] = Query(None),
         after_id: Optional[int] = Query(None),
     ):
         try:
@@ -166,11 +168,12 @@ async def setup_api_router(ctx) -> APIRouter:
         sort: str = Query("name"),
         order: str = Query("asc"),
         after_dir: Optional[int] = Query(None),
+        after_sort_val: Optional[str] = Query(None),
         after_name: Optional[str] = Query(None),
     ):
         try:
             return res2.data(
-                await fs.list_dir(path, page, page_size, sort, order, after_dir, after_name),
+                await fs.list_dir(path, page, page_size, sort, order, after_dir, after_sort_val, after_name),
                 request=request,
             )
         except ValueError as e:

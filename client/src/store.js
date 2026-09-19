@@ -37,4 +37,16 @@ export const store = reactive({
   searchScope: null,
 })
 
+/** 表格视图列宽（px，可拖拽调整，localStorage 持久化） */
+const savedCols = (() => {
+  try { return JSON.parse(localStorage.getItem('ff_tableCols') || 'null') } catch { return null }
+})()
+export const tableCols = reactive({
+  name: 260, ext: 70, size: 90, date: 130, path: 200,
+  ...(savedCols && typeof savedCols === 'object' ? savedCols : {}),
+})
+export function saveTableCols() {
+  try { localStorage.setItem('ff_tableCols', JSON.stringify({ ...tableCols })) } catch { /* noop */ }
+}
+
 export const viewCfg = () => VIEW_MODES[store.viewMode] || VIEW_MODES.medium
