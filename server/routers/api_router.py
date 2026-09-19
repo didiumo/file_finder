@@ -18,6 +18,7 @@ from ..logic.search_logic import SearchLogic
 from ..logic.favorite_logic import FavoriteLogic
 from ..logic.preview_logic import PreviewLogic
 from ..logic.collection_logic import CollectionLogic
+from ..logic.fs_logic import FsLogic
 
 
 async def setup_api_router(ctx) -> APIRouter:
@@ -34,6 +35,7 @@ async def setup_api_router(ctx) -> APIRouter:
     favorites = FavoriteLogic(ctx)
     preview = PreviewLogic(ctx)
     collect = CollectionLogic(ctx, indexer, favorites)
+    fs = FsLogic(ctx)
 
     router = APIRouter(prefix=api_prefix, tags=["file_finder"])
 
@@ -103,7 +105,9 @@ async def setup_api_router(ctx) -> APIRouter:
         date_from: Optional[float] = Query(None),
         date_to: Optional[float] = Query(None),
         fav_only: bool = Query(False),
-        include_dirs: bool = Query(False),
+        include_dirs: bool = Query(True),
+        regex: bool = Query(False),
+        prefix: Optional[str] = Query(None),
         sort: str = Query("name"),
         order: str = Query("asc"),
         page: int = Query(1),
@@ -113,12 +117,15 @@ async def setup_api_router(ctx) -> APIRouter:
         after_mtime: Optional[float] = Query(None),
         after_id: Optional[int] = Query(None),
     ):
-        return res2.data(
-            await search.search(q, root_id, ext, size_min, size_max, date_from, date_to,
-                                fav_only, include_dirs, sort, order, page, page_size,
-                                after_name, after_size, after_mtime, after_id),
-            request=request,
-        )
+        try:
+            result = await search.search(
+                q, root_id, ext, size_min, size_max, date_from, date_to,
+                fav_only, include_dirs, regex, prefix, sort, order, page, page_size,
+                after_name, after_size, after_mtime, after_id,
+            )
+        except ValueError as e:
+            return res2.error(str(e), code=400, request=request)
+        return res2.data(result, request=request)
 
     @router.get("/files/{file_id}")
     async def api_get_file(file_id: int, request: Request):
@@ -146,6 +153,28 @@ async def setup_api_router(ctx) -> APIRouter:
         result = await search.delete_files(ids)
         await audit("files.batch_delete", request, {"count": result["deleted"]})
         return res2.data(result, msg=f"已删除 {result['deleted']} 个文件", request=request)
+
+    # ==================================================================
+    # 文件系统浏览（实时读盘，不触发全量扫描）
+    # ==================================================================
+    @router.get("/fs/list")
+    async def api_fs_list(
+        request: Request,
+        path: str = Query(...),
+        page: int = Query(1),
+        page_size: int = Query(300),
+        sort: str = Query("name"),
+        order: str = Query("asc"),
+        after_dir: Optional[int] = Query(None),
+        after_name: Optional[str] = Query(None),
+    ):
+        try:
+            return res2.data(
+                await fs.list_dir(path, page, page_size, sort, order, after_dir, after_name),
+                request=request,
+            )
+        except ValueError as e:
+            return res2.error(str(e), code=400, request=request)
 
     # ==================================================================
     # 统计

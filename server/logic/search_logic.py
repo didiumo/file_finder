@@ -3,11 +3,15 @@ file_finder 搜索与统计
 =====================
 基于 SQLite 索引的即时搜索：
 - 文件名 / 路径 子串匹配（LIKE，自动转义通配符）
-- 支持扩展名、大小区间、修改时间区间、仅收藏、是否含目录等过滤
+- 正则表达式匹配（regex=1，Python re 层过滤，配合分页）
+- 目录参与搜索（include_dirs 默认开启，everything 风格）
+- 目录范围限定（prefix：在某目录内搜索，含其子树）
+- 支持扩展名、大小区间、修改时间区间、仅收藏等过滤
 - 走 db_v2 只读连接池，搜索与扫描可并发互不阻塞
 - 排序稳定（name/size/mtime + id 兜底），支持翻页
 """
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -48,7 +52,9 @@ class SearchLogic:
         date_from: Optional[float] = None,
         date_to: Optional[float] = None,
         fav_only: bool = False,
-        include_dirs: bool = False,
+        include_dirs: bool = True,
+        regex: bool = False,
+        prefix: Optional[str] = None,
         sort: str = "name",
         order: str = "asc",
         page: int = 1,
@@ -62,7 +68,9 @@ class SearchLogic:
         params: List[Any] = []
 
         q = (q or "").strip()
-        if q:
+        regex = bool(regex)
+        # 正则模式下 q 不走 FTS/LIKE，改为 Python re 层过滤（见下方正则分支）
+        if q and not regex:
             if len(q) >= 3:
                 # FTS5 trigram：任意子串匹配（大小写不敏感），毫秒级
                 fts_q = q.replace('"', '""')
@@ -79,6 +87,15 @@ class SearchLogic:
         if root_id is not None:
             where.append("f.root_id = ?")
             params.append(root_id)
+        if prefix:
+            # 在某目录内搜索：目录自身 + 整个子树（everything 的“进入文件夹搜索”）
+            prefix = str(prefix).strip().strip("/")
+            if prefix:
+                esc = _escape_like(prefix)
+                where.append(
+                    "(f.rel_path = ? OR f.rel_path LIKE ? ESCAPE '\\')"
+                )
+                params.extend([prefix, f"{prefix}/%"])
         if not include_dirs:
             where.append("f.is_dir = 0")
         if ext:
@@ -101,10 +118,50 @@ class SearchLogic:
         if fav_only:
             where.append("EXISTS(SELECT 1 FROM favorites fa WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path)")
 
-        sort_col = {"name": "f.name", "size": "f.size", "mtime": "f.mtime"}.get(sort, "f.name")
-        order_sql = "DESC" if str(order).lower() == "desc" else "ASC"
         page = max(1, int(page))
         page_size = max(1, min(2000, int(page_size)))
+
+        # 正则模式：候选全量（应用除 q 外的过滤）→ Python re 匹配 → 内存分页
+        if regex and q:
+            try:
+                compiled = re.compile(q, re.IGNORECASE)
+            except re.error as e:
+                raise ValueError(f"正则表达式无效: {e}")
+            base_where = " AND ".join(where) if where else "1=1"
+            cand_rows = await self.db.fetch_all(
+                self.db_path,
+                f"SELECT f.id, f.name, f.rel_path FROM files f JOIN roots r ON r.id = f.root_id "
+                f"WHERE r.enabled = 1 AND {base_where}",
+                tuple(params),
+            )
+            matched: List[Tuple[int, str, str]] = []
+            for r in cand_rows:
+                nm, rp = r["name"], r["rel_path"]
+                if compiled.search(nm) or compiled.search(rp):
+                    matched.append((r["id"], nm, rp))
+            total = len(matched)
+            offset = (page - 1) * page_size
+            page_ids = [m[0] for m in matched[offset:offset + page_size]]
+            items: List[Dict[str, Any]] = []
+            if page_ids:
+                rows = await self.db.fetch_all(
+                    self.db_path,
+                    f"{_BASE_SELECT} AND f.id IN ({','.join('?' * len(page_ids))})",
+                    tuple(page_ids),
+                )
+                by_id = {r["id"]: dict(r) for r in rows}
+                items = [self._to_item(by_id[i]) for i in page_ids if i in by_id]
+            return {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "has_more": offset + len(items) < total,
+                "items": items,
+                "next_cursor": None,
+            }
+
+        sort_col = {"name": "f.name", "size": "f.size", "mtime": "f.mtime"}.get(sort, "f.name")
+        order_sql = "DESC" if str(order).lower() == "desc" else "ASC"
 
         # 游标分页：跳过 OFFSET 全扫描，深翻页 O(页大小)
         after_val = {"name": after_name, "size": after_size, "mtime": after_mtime}.get(sort)
