@@ -52,6 +52,7 @@ export const apiFs = {
 export const apiFavorites = {
   list: (params) => api('/favorites?' + new URLSearchParams(params).toString()),
   toggle: (fileId) => api('/favorites/toggle', { method: 'POST', body: JSON.stringify({ file_id: fileId }), headers: { 'Content-Type': 'application/json' } }),
+  batch: (fileIds) => api('/favorites/batch', { method: 'POST', body: JSON.stringify({ file_ids: fileIds }), headers: { 'Content-Type': 'application/json' } }),
   remove: (favId) => api(`/favorites/${favId}`, { method: 'DELETE' }),
   pruneMissing: () => api('/favorites/prune-missing', { method: 'POST' }),
 }
@@ -91,9 +92,9 @@ export const apiCollect = {
 
 export const apiTrash = {
   list: (params) => api('/trash/list?' + new URLSearchParams(params).toString()),
-  restore: (ids) => api('/trash/restore', { method: 'POST', body: JSON.stringify({ ids }), headers: { 'Content-Type': 'application/json' } }),
-  purge: (ids) => api('/trash/purge', { method: 'POST', body: JSON.stringify({ ids }), headers: { 'Content-Type': 'application/json' } }),
-  empty: () => api('/trash/empty', { method: 'POST', body: JSON.stringify({}), headers: { 'Content-Type': 'application/json' } }),
+  restore: (ids) => api('/trash/restore', { method: 'POST', body: JSON.stringify({ ids, async: true }), headers: { 'Content-Type': 'application/json' } }),
+  purge: (ids) => api('/trash/purge', { method: 'POST', body: JSON.stringify({ ids, async: true }), headers: { 'Content-Type': 'application/json' } }),
+  empty: () => api('/trash/empty', { method: 'POST', body: JSON.stringify({ async: true }), headers: { 'Content-Type': 'application/json' } }),
 }
 
 export const apiStats = () => api('/stats')

@@ -14,14 +14,15 @@ from typing import Any, Dict, List, Optional
 _LIST_SQL = """
 SELECT fa.id AS fav_id, fa.root_id, fa.rel_path, fa.name, fa.ext,
        fa.size AS fav_size, fa.mtime AS fav_mtime, fa.created_at,
-       r.path AS root_path, r.display_name AS root_name,
+       COALESCE(r.path, fa.root_path, '') AS root_path,
+       COALESCE(r.display_name, '') AS root_name,
        f.id AS file_id,
        CASE WHEN f.id IS NULL OR COALESCE(f.trashed, 0) = 1 THEN 0 ELSE 1 END AS exists_now,
        COALESCE(f.size, fa.size) AS size,
        COALESCE(f.mtime, fa.mtime) AS mtime
 FROM favorites fa
-JOIN roots r ON r.id = fa.root_id
-LEFT JOIN files f ON f.root_id = fa.root_id AND f.rel_path = fa.rel_path
+LEFT JOIN roots r ON (r.id = fa.root_id OR (fa.root_path != '' AND r.path = fa.root_path))
+LEFT JOIN files f ON (f.root_id = COALESCE(r.id, fa.root_id) AND f.rel_path = fa.rel_path)
 """
 
 
@@ -36,8 +37,8 @@ class FavoriteLogic:
         """切换收藏状态，返回 {favorite: bool}"""
         row = await self.db.fetch_one(
             self.db_path,
-            "SELECT f.id, f.root_id, f.rel_path, f.name, f.size, f.mtime, f.ext "
-            "FROM files f WHERE f.id=?",
+            "SELECT f.id, f.root_id, f.rel_path, f.name, f.size, f.mtime, f.ext, r.path AS root_path "
+            "FROM files f JOIN roots r ON r.id = f.root_id WHERE f.id=?",
             (file_id,),
         )
         if not row:
@@ -54,9 +55,9 @@ class FavoriteLogic:
             return {"favorite": False, "fav_id": None}
         fav_id = await self.db.insert(
             self.db_path,
-            "INSERT INTO favorites (root_id, rel_path, name, size, mtime, ext, created_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (row["root_id"], row["rel_path"], row["name"], row["size"], row["mtime"],
+            "INSERT INTO favorites (root_id, root_path, rel_path, name, size, mtime, ext, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (row["root_id"], row["root_path"] or "", row["rel_path"], row["name"], row["size"], row["mtime"],
              row["ext"], time.time()),
         )
         return {"favorite": True, "fav_id": fav_id}
@@ -66,7 +67,8 @@ class FavoriteLogic:
         now = time.time()
         rows = await self.db.fetch_all(
             self.db_path,
-            f"SELECT id, root_id, rel_path, name, size, mtime, ext FROM files WHERE id IN ({','.join('?' * len(file_ids))})",
+            f"SELECT f.id, f.root_id, f.rel_path, f.name, f.size, f.mtime, f.ext, r.path AS root_path "
+            f"FROM files f JOIN roots r ON r.id = f.root_id WHERE f.id IN ({','.join('?' * len(file_ids))})",
             tuple(file_ids),
         )
         added = 0
@@ -80,9 +82,9 @@ class FavoriteLogic:
                 continue
             await self.db.insert(
                 self.db_path,
-                "INSERT INTO favorites (root_id, rel_path, name, size, mtime, ext, created_at) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (r["root_id"], r["rel_path"], r["name"], r["size"], r["mtime"], r["ext"], now),
+                "INSERT INTO favorites (root_id, root_path, rel_path, name, size, mtime, ext, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (r["root_id"], r["root_path"] or "", r["rel_path"], r["name"], r["size"], r["mtime"], r["ext"], now),
             )
             added += 1
         return added
@@ -160,7 +162,7 @@ class FavoriteLogic:
         where_sql = " AND ".join(where) if where else "1=1"
         sort_col = {
             "created_at": "fa.created_at", "name": "fa.name", "size": "COALESCE(f.size, fa.size)",
-            "mtime": "COALESCE(f.mtime, fa.mtime)",
+            "mtime": "COALESCE(f.mtime, fa.mtime)", "path": "fa.rel_path",
         }.get(sort, "fa.created_at")
         order_sql = "DESC" if str(order).lower() == "desc" else "ASC"
         page = max(1, int(page))

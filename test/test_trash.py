@@ -38,11 +38,11 @@ def check(name, cond, detail=""):
 sb = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_sandbox.py")
 subprocess.run([sys.executable, sb], check=True, capture_output=True)
 
-# 清空历史回收站 + 历史收藏
-req("POST", "/trash/empty", {})
-st, old_favs = req("GET", "/favorites?page_size=1000")
-for f in old_favs["data"]["items"]:
-    req("DELETE", f"/favorites/{f['fav_id']}")
+# 仅清理沙箱对应的历史收藏（绝不影响用户真实收藏）
+st, old_favs = req("GET", "/favorites?root_id=3&page_size=1000")
+if isinstance(old_favs, dict) and "data" in old_favs and "items" in old_favs["data"]:
+    for f in old_favs["data"]["items"]:
+        req("DELETE", f"/favorites/{f['fav_id']}")
 
 # 扫描沙箱
 st, r = req("POST", "/roots/3/scan", {"mode": "incremental"})
@@ -64,7 +64,7 @@ total_before = s["data"]["total"]
 # 收藏 readme + photo（保留清单）
 req("POST", "/favorites/toggle", {"file_id": files["readme.md"]["id"]})
 req("POST", "/favorites/toggle", {"file_id": files["photo.png"]["id"]})
-st, fav = req("GET", "/favorites")
+st, fav = req("GET", "/favorites?root_id=3")
 check("favorites=2", fav["data"]["total"] == 2)
 
 # 1. 删除 clip.mp4（单删）→ 进回收站

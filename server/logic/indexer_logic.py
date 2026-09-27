@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS files (
     "CREATE INDEX IF NOT EXISTS idx_files_name_dir ON files(name, is_dir, id);",
     "CREATE INDEX IF NOT EXISTS idx_files_size_dir ON files(size, is_dir, id);",
     "CREATE INDEX IF NOT EXISTS idx_files_mtime_dir ON files(mtime, is_dir, id);",
+    "CREATE INDEX IF NOT EXISTS idx_files_trashed_name ON files(trashed, name, id);",
+    "CREATE INDEX IF NOT EXISTS idx_files_trashed_size ON files(trashed, size, id);",
+    "CREATE INDEX IF NOT EXISTS idx_files_trashed_mtime ON files(trashed, mtime, id);",
     """
 CREATE TABLE IF NOT EXISTS favorites (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,8 +147,24 @@ class IndexerLogic:
             if st:
                 await self.db.execute(self.db_path, st)
         await self._ensure_trash_columns()
+        await self._ensure_favorite_columns()
         await self._sync_fts_backfill()
         self.log.info("file_finder 数据库表结构已就绪")
+
+    async def _ensure_favorite_columns(self):
+        """幂等迁移：favorites 表加 root_path 列，支持根目录变动时自愈"""
+        cols = await self.db.fetch_all(self.db_path, "PRAGMA table_info(favorites)")
+        names = {c["name"] for c in cols}
+        if "root_path" not in names:
+            await self.db.execute(
+                self.db_path, "ALTER TABLE favorites ADD COLUMN root_path TEXT NOT NULL DEFAULT ''"
+            )
+            # 回填已有的 root_path
+            await self.db.execute(
+                self.db_path,
+                "UPDATE favorites SET root_path = (SELECT path FROM roots WHERE roots.id = favorites.root_id) WHERE root_path = ''"
+            )
+            self.log.info("favorites 表已迁移：新增 root_path 列")
 
     async def _ensure_trash_columns(self):
         """幂等迁移：files 表加回收站标记列（trashed / trashed_at）"""
@@ -233,10 +252,8 @@ class IndexerLogic:
         for path in roots:
             if not path or not str(path).strip():
                 continue
-            p = str(path).strip()
-            exists = await self.db.fetch_one(
-                self.db_path, "SELECT id FROM roots WHERE path=?", (p,)
-            )
+            p = os.path.normpath(str(path).strip())
+            exists = await self.get_root_by_path(p)
             if not exists:
                 await self.db.execute(
                     self.db_path,
@@ -268,11 +285,16 @@ class IndexerLogic:
         return dict(row) if row else None
 
     async def get_root_by_path(self, path: str) -> Optional[Dict[str, Any]]:
-        row = await self.db.fetch_one(self.db_path, "SELECT * FROM roots WHERE path=?", (path,))
+        norm = os.path.normpath(str(path).strip())
+        row = await self.db.fetch_one(
+            self.db_path,
+            "SELECT * FROM roots WHERE path=? OR path=?",
+            (norm, str(path).strip().rstrip("\\/")),
+        )
         return dict(row) if row else None
 
     async def add_root(self, path: str, display_name: str = "") -> Dict[str, Any]:
-        path = str(path).strip().rstrip("\\/")
+        path = os.path.normpath(str(path).strip())
         if not path:
             raise ValueError("路径不能为空")
         exists = await self.get_root_by_path(path)
@@ -295,7 +317,7 @@ class IndexerLogic:
         root = await self.get_root(root_id)
         if not root:
             return False
-        await self.db.execute(self.db_path, "DELETE FROM favorites WHERE root_id=?", (root_id,))
+        # 用户收藏属于用户主动保留的内容，不随根目录删除而抹除（标记为已丢失状态，支持重新挂载后自愈）
         await self.db.execute(self.db_path, "DELETE FROM files WHERE root_id=?", (root_id,))
         await self.db.execute(self.db_path, "DELETE FROM roots WHERE id=?", (root_id,))
         self.log.info(f"已删除扫描根 #{root_id}: {root['path']}")
@@ -496,11 +518,20 @@ class IndexerLogic:
             changed = []  # (id, new_size, new_mtime, new_indexed_at)
             collected: set = set()
 
+        last_percent = 1.0
+        last_progress_time = time.time()
+        reported_files = 0
+
         def stats_percent() -> float:
+            nonlocal last_percent
             denom = stats["dirs"] + stats["pending"]
             if denom <= 0:
-                return 1.0
-            return min(94.0, max(1.0, stats["dirs"] / denom * 94.0))
+                calc = 1.0
+            else:
+                calc = min(88.0, max(1.0, (stats["dirs"] / denom) * 88.0))
+            if calc > last_percent:
+                last_percent = calc
+            return round(last_percent, 1)
 
         while True:
             if walk_fut.done() and out_q.empty():
@@ -510,8 +541,14 @@ class IndexerLogic:
             except queue.Empty:
                 # 非阻塞轮询：主动让出事件循环，避免阻塞 HTTP 等其他协程
                 await asyncio.sleep(0.01)
-                if task:
-                    await task.update(current=stats["files"], percent=stats_percent())
+                now_time = time.time()
+                if task and (now_time - last_progress_time >= 0.2 or stats["files"] - reported_files >= 100):
+                    last_progress_time = now_time
+                    reported_files = stats["files"]
+                    await task.update(
+                        current=stats["files"], percent=stats_percent(),
+                        stage=f"扫描遍历中，已发现 {stats['files']} 个文件（{stats['dirs']} 个目录）",
+                    )
                 continue
             if rec is None:
                 continue
@@ -538,13 +575,21 @@ class IndexerLogic:
             if len(batch) >= 2000:
                 await self.db.execute_many(self.db_path, _INSERT_SQL, batch)
                 batch.clear()
-                if task:
-                    await task.update(current=stats["files"], percent=stats_percent())
-            else:
-                processed_since_yield += 1
-                if processed_since_yield >= 500:
-                    processed_since_yield = 0
-                    await asyncio.sleep(0)  # 让出事件循环，保持 HTTP 响应及时
+
+            # 周期性上报进度（时间 >= 0.2s 或数量 >= 200 项，无论增量是否有新写入均平滑上报）
+            now_time = time.time()
+            if task and (now_time - last_progress_time >= 0.2 or stats["files"] - reported_files >= 200):
+                last_progress_time = now_time
+                reported_files = stats["files"]
+                await task.update(
+                    current=stats["files"], percent=stats_percent(),
+                    stage=f"正在扫描索引（已发现 {stats['files']} 个文件，{stats['dirs']} 个目录）",
+                )
+
+            processed_since_yield += 1
+            if processed_since_yield >= 400:
+                processed_since_yield = 0
+                await asyncio.sleep(0)  # 让出事件循环，保持 HTTP 响应及时
 
         # 收尾写库
         if batch:
@@ -554,6 +599,8 @@ class IndexerLogic:
         if mode == "incremental":
             # 更新变更行
             if changed:
+                if task:
+                    await task.update(percent=90.0, stage=f"正在更新变更文件（{len(changed)} 项）...")
                 await self.db.execute_many(
                     self.db_path,
                     "UPDATE files SET size=?, mtime=?, indexed_at=? WHERE id=?",
@@ -573,6 +620,8 @@ class IndexerLogic:
                 if rel not in collected and not old[4]:
                     missing_ids.append(old[0])
             if missing_ids:
+                if task:
+                    await task.update(percent=94.0, stage=f"正在清理失效索引（{len(missing_ids)} 项）...")
                 for i in range(0, len(missing_ids), 2000):
                     chunk = missing_ids[i:i + 2000]
                     placeholders = ",".join("?" * len(chunk))
@@ -583,7 +632,7 @@ class IndexerLogic:
         if task:
             await task.update(
                 current=stats["files"], total=stats["files"],
-                percent=95, stage=f"写入数据库完成（新增 {inserted} / 更新 {updated} / 删除 {deleted}）",
+                percent=98.0, stage=f"索引写入完成（新增 {inserted} / 更新 {updated} / 删除 {deleted}）",
             )
         self.log.info(f"索引写入完成 mode={mode} 新增={inserted} 更新={updated} 复活={revived} 删除={deleted}")
 

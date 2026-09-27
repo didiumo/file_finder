@@ -71,7 +71,7 @@
         </template>
         <!-- 视频 -->
         <template v-else-if="kind === 'video'">
-          <video v-if="!mediaFailed" :src="previewUrl" controls autoplay playsinline class="video" @error="mediaFailed = true"></video>
+          <video v-if="!mediaFailed" :src="previewUrl" controls playsinline class="video" @error="mediaFailed = true"></video>
           <div v-else class="unsupported">
             <Icon name="warn" :size="52" style="color:#d9a53f" />
             <p>文件已丢失或不可访问</p>
@@ -114,7 +114,7 @@ const loading = ref(false)
 const mediaFailed = ref(false)
 let controller = null
 
-const emit = defineEmits(['deleted'])
+const emit = defineEmits(['fav-change', 'item-deleted', 'enter'])
 
 const item = computed(() => store.selected || {})
 const isDir = computed(() => !!item.value.is_dir)
@@ -130,7 +130,7 @@ const previewUrl = computed(() => (item.value.id ? apiFiles.previewUrl(item.valu
 watch(() => store.previewKey, async () => {
   const it = item.value
   if (!it || !it.id || it.is_dir) return
-  isFav.value = !!it.favorite
+  isFav.value = !!(it.favorite || it.fav_id)
   mediaFailed.value = false
   const k = classifyExt(it.ext)
   loading.value = true
@@ -156,7 +156,6 @@ async function toggleFav() {
   if (!it || !it.id || it.is_dir) return
   let favorite
   if (it.fav_id && !it.file_id) {
-    // 收藏视图且文件丢失：按收藏记录删除
     await apiFavorites.remove(it.fav_id)
     favorite = false
   } else {
@@ -164,8 +163,8 @@ async function toggleFav() {
     favorite = r.data.favorite
   }
   it.favorite = favorite
-  store.previewKey++
-  emit('deleted') // 触发列表刷新（收藏状态变化）
+  isFav.value = favorite
+  emit('fav-change', { item: it, favorite })
 }
 
 async function copyPath() {
@@ -185,11 +184,11 @@ function download() {
 async function removeFile() {
   const it = item.value
   if (!it || !it.id || it.is_dir) return
-  if (!confirm(`确定删除文件「${it.name}」？\n${it.root_path}\\${it.rel_path}`)) return
+  if (!confirm(`确定将「${it.name}」移入回收站？\n${it.root_path}\\${it.rel_path}`)) return
   await apiFiles.remove(it.id)
+  const removedId = it.id
   store.selected = null
-  store.previewKey++
-  emit('deleted')
+  emit('item-deleted', removedId)
 }
 
 /* ---------- 拖拽拉伸 ---------- */

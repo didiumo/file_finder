@@ -9,7 +9,7 @@ export const VIEW_MODES = {
 
 /** 过滤条件持久化键：tab / 视图 / 搜索词 / 类型 / 排序等，刷新后恢复 */
 const FILTER_KEY = 'ff_filters'
-const TABS = ['search', 'fs', 'favorites', 'trash']
+const TABS = ['search', 'pick', 'fs', 'favorites', 'trash']
 const VIEWS = ['small', 'medium', 'large', 'table']
 function loadSaved() {
   try {
@@ -20,7 +20,7 @@ function loadSaved() {
 const saved = loadSaved()
 
 export const store = reactive({
-  tab: TABS.includes(saved.tab) ? saved.tab : 'search',   // 'search' | 'favorites' | 'fs'（文件系统浏览） | 'trash'（回收站）
+  tab: TABS.includes(saved.tab) ? saved.tab : 'search',   // 'search' | 'pick'（拣选） | 'favorites' | 'fs' | 'trash'
   viewMode: VIEWS.includes(saved.viewMode) ? saved.viewMode : 'medium',  // 'small' | 'medium' | 'large' | 'table'
   q: typeof saved.q === 'string' ? saved.q : '',
   regex: !!saved.regex,     // 正则表达式搜索开关
@@ -30,8 +30,14 @@ export const store = reactive({
   // 隐藏已收藏（搜索时排除已收藏项；状态持久化，刷新后仍生效）
   hideFav: saved.hideFav !== undefined ? !!saved.hideFav
     : (() => { try { return localStorage.getItem('ff_hide_fav') === '1' } catch { return false } })(),
-  sort: typeof saved.sort === 'string' ? saved.sort : 'name',   // name | size | mtime
+  sort: typeof saved.sort === 'string' ? saved.sort : 'name',   // name | path | size | mtime
   order: saved.order === 'desc' ? 'desc' : 'asc',               // asc | desc
+
+  // 拣选模式配置
+  pickBatchSize: typeof saved.pickBatchSize === 'number' ? saved.pickBatchSize : 200,   // 每批大小，默认 200
+  pickConfirmDelete: saved.pickConfirmDelete !== undefined ? !!saved.pickConfirmDelete : true, // 删除前确认
+  pickPage: 1,              // 当前拣选批次页码
+  pickTotal: 0,             // 拣选模式待处理剩余总数
 
   roots: [],                // 扫描根列表
   stats: null,              // 全局统计
@@ -78,12 +84,14 @@ export function persistFilters() {
       rootId: store.rootId, ext: store.ext, favOnly: store.favOnly, hideFav: store.hideFav,
       sort: store.sort, order: store.order,
       previewWidth: store.previewWidth,
+      pickBatchSize: store.pickBatchSize, pickConfirmDelete: store.pickConfirmDelete,
       fsRootId: store.fsRoot ? store.fsRoot.id : null, fsRel: store.fsRel,
     }))
   } catch { /* noop */ }
 }
 watch(() => [store.tab, store.viewMode, store.q, store.regex, store.rootId, store.ext,
              store.favOnly, store.hideFav, store.sort, store.order,
+             store.pickBatchSize, store.pickConfirmDelete,
              store.fsRoot ? store.fsRoot.id : null, store.fsRel],
   () => persistFilters())
 

@@ -6,10 +6,11 @@ file_finder API 路由
 - 写操作通过 audit_v2 记录审计
 - 预览/下载/缩略图等二进制接口直接返回原生响应
 """
+import asyncio
 from typing import List, Optional
 
 from fastapi import APIRouter, Body, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from plugins.audit_v2 import AuditRecord
 
@@ -108,6 +109,7 @@ async def setup_api_router(ctx) -> APIRouter:
         date_to: Optional[float] = Query(None),
         fav_only: bool = Query(False),
         hide_fav: bool = Query(False),
+        hide_fav_before: Optional[float] = Query(None),
         include_dirs: bool = Query(True),
         regex: bool = Query(False),
         prefix: Optional[str] = Query(None),
@@ -124,9 +126,29 @@ async def setup_api_router(ctx) -> APIRouter:
     ):
         try:
             result = await search.search(
-                q, root_id, ext, size_min, size_max, date_from, date_to,
-                fav_only, hide_fav, include_dirs, regex, prefix, sort, order, page, page_size,
-                after_name, after_size, after_mtime, after_id,
+                q=q,
+                root_id=root_id,
+                ext=ext,
+                size_min=size_min,
+                size_max=size_max,
+                date_from=date_from,
+                date_to=date_to,
+                fav_only=fav_only,
+                hide_fav=hide_fav,
+                hide_fav_before=hide_fav_before,
+                include_dirs=include_dirs,
+                regex=regex,
+                prefix=prefix,
+                sort=sort,
+                order=order,
+                page=page,
+                page_size=page_size,
+                after_name=after_name,
+                after_size=after_size,
+                after_mtime=after_mtime,
+                after_ext=after_ext,
+                after_path=after_path,
+                after_id=after_id,
             )
         except ValueError as e:
             return res2.error(str(e), code=400, request=request)
@@ -155,6 +177,12 @@ async def setup_api_router(ctx) -> APIRouter:
         ids: List[int] = body.get("ids", []) or []
         if not ids:
             return res2.error("ids 不能为空", code=400, request=request)
+        async_mode = bool(body.get("async", True))
+        if async_mode and task_engine is not None and len(ids) > 5:
+            task_id = await trash.create_delete_task(ids)
+            if task_id:
+                await audit("files.batch_delete", request, {"count": len(ids), "task_id": task_id})
+                return res2.data({"task_id": task_id, "total": len(ids)}, msg="移入回收站任务已启动", request=request)
         result = await trash.move_to_trash(ids)
         await audit("files.batch_delete", request, {"count": result["moved"], "missing": result["missing"]})
         return res2.data(result, msg=f"已移入回收站 {result['moved']} 项", request=request)
@@ -182,6 +210,18 @@ async def setup_api_router(ctx) -> APIRouter:
         ids: List[int] = body.get("ids", []) or []
         if not ids:
             return res2.error("ids 不能为空", code=400, request=request)
+        async_mode = body.get("async", None)
+        use_task = False
+        if task_engine is not None:
+            if async_mode is True and len(ids) > 2:
+                use_task = True
+            elif async_mode is not False and len(ids) > 5:
+                use_task = True
+        if use_task:
+            task_id = await trash.create_restore_task(ids)
+            if task_id:
+                await audit("trash.restore", request, {"count": len(ids), "task_id": task_id})
+                return res2.data({"task_id": task_id, "total": len(ids)}, msg="恢复文件任务已启动", request=request)
         result = await trash.restore(ids)
         await audit("trash.restore", request, {"count": result["restored"]})
         return res2.data(result, msg=f"已恢复 {result['restored']} 项", request=request)
@@ -191,12 +231,37 @@ async def setup_api_router(ctx) -> APIRouter:
         ids: List[int] = body.get("ids", []) or []
         if not ids:
             return res2.error("ids 不能为空", code=400, request=request)
+        async_mode = body.get("async", None)
+        use_task = False
+        if task_engine is not None:
+            if async_mode is True and len(ids) > 2:
+                use_task = True
+            elif async_mode is not False and len(ids) > 5:
+                use_task = True
+        if use_task:
+            task_id = await trash.create_purge_task(ids)
+            if task_id:
+                await audit("trash.purge", request, {"count": len(ids), "task_id": task_id})
+                return res2.data({"task_id": task_id, "total": len(ids)}, msg="彻底删除任务已启动", request=request)
         result = await trash.purge(ids)
         await audit("trash.purge", request, {"count": result["purged"]})
         return res2.data(result, msg=f"已彻底删除 {result['purged']} 项", request=request)
 
     @router.post("/trash/empty")
     async def api_trash_empty(request: Request, body: dict = Body(default={})):
+        async_mode = body.get("async", None)
+        count = await trash.get_trash_count()
+        use_task = False
+        if task_engine is not None:
+            if async_mode is True and count > 0:
+                use_task = True
+            elif async_mode is not False and count > 10:
+                use_task = True
+        if use_task:
+            task_id = await trash.create_empty_task()
+            if task_id:
+                await audit("trash.empty", request, {"count": count, "task_id": task_id})
+                return res2.data({"task_id": task_id, "total": count}, msg="清空回收站任务已启动", request=request)
         result = await trash.empty()
         await audit("trash.empty", request, {"count": result["purged"]})
         return res2.data(result, msg=f"已清空回收站（{result['purged']} 项）", request=request)
@@ -302,6 +367,8 @@ async def setup_api_router(ctx) -> APIRouter:
             return res2.error(f"文件 #{file_id} 不存在", code=404, request=request)
         return res2.data(preview.preview_info(item), request=request)
 
+    thumb_sem = asyncio.Semaphore(4)
+
     @router.get("/files/{file_id}/preview")
     async def api_preview(file_id: int):
         item = await search.get_file(file_id)
@@ -310,7 +377,7 @@ async def setup_api_router(ctx) -> APIRouter:
         kind = preview.classify(item)
         if kind == "text":
             try:
-                data = preview.read_text(item)
+                data = await asyncio.to_thread(preview.read_text, item)
             except Exception as e:
                 return res2.error(f"读取失败: {e}", code=500)
             return Response(
@@ -333,7 +400,13 @@ async def setup_api_router(ctx) -> APIRouter:
             return res2.error(f"文件 #{file_id} 不存在", code=404)
         if preview.classify(item) != "image":
             return res2.error("非图片文件", code=415, status_code=415)
-        resp = preview.image_thumbnail(item, max(32, min(1024, size)))
+        thumb_size = max(32, min(1024, size))
+        cache_name = f"{item['id']}_{int(item['mtime'])}_s{thumb_size}.webp"
+        cache_file = preview.thumb_dir / cache_name
+        if cache_file.exists():
+            return FileResponse(str(cache_file), media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
+        async with thumb_sem:
+            resp = await asyncio.to_thread(preview.image_thumbnail, item, thumb_size)
         if resp is None:
             return res2.error("无法生成缩略图", code=500)
         return resp

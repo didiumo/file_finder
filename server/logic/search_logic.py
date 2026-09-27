@@ -53,6 +53,7 @@ class SearchLogic:
         date_to: Optional[float] = None,
         fav_only: bool = False,
         hide_fav: bool = False,
+        hide_fav_before: Optional[float] = None,
         include_dirs: bool = True,
         regex: bool = False,
         prefix: Optional[str] = None,
@@ -125,7 +126,11 @@ class SearchLogic:
         if fav_only:
             where.append("EXISTS(SELECT 1 FROM favorites fa WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path)")
         if hide_fav:
-            where.append("NOT EXISTS(SELECT 1 FROM favorites fa WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path)")
+            if hide_fav_before is not None:
+                where.append("NOT EXISTS(SELECT 1 FROM favorites fa WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path AND fa.created_at <= ?)")
+                params.append(hide_fav_before)
+            else:
+                where.append("NOT EXISTS(SELECT 1 FROM favorites fa WHERE fa.root_id = f.root_id AND fa.rel_path = f.rel_path)")
 
         page = max(1, int(page))
         page_size = max(1, min(2000, int(page_size)))
@@ -176,6 +181,9 @@ class SearchLogic:
         sort_field = {"name": "name", "size": "size", "mtime": "mtime", "ext": "ext", "path": "rel_path"}.get(sort, "name")
         order_sql = "DESC" if str(order).lower() == "desc" else "ASC"
 
+        base_where_sql = " AND ".join(where) if where else "1=1"
+        base_params = list(params)
+
         # 游标分页：跳过 OFFSET 全扫描，深翻页 O(页大小)
         after_val = {
             "name": after_name, "size": after_size, "mtime": after_mtime,
@@ -193,10 +201,11 @@ class SearchLogic:
 
         where_sql = " AND ".join(where) if where else "1=1"
 
+        # 总数计算必须基于基础查询条件（排除游标过滤条件），否则滚动翻页时总数会缩水
         total = await self.db.fetch_val(
             self.db_path,
-            f"SELECT COUNT(*) FROM files f JOIN roots r ON r.id = f.root_id WHERE r.enabled = 1 AND {where_sql}",
-            tuple(params),
+            f"SELECT COUNT(*) FROM files f JOIN roots r ON r.id = f.root_id WHERE r.enabled = 1 AND {base_where_sql}",
+            tuple(base_params),
             default=0,
         )
 

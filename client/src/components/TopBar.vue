@@ -5,6 +5,9 @@
       <button class="tab" :class="{ on: store.tab === 'search' }" @click="switchTab('search')">
         <Icon name="search" :size="14" /> 搜索
       </button>
+      <button class="tab" :class="{ on: store.tab === 'pick' }" @click="switchTab('pick')" title="分批拣选：每批200项打星保留，一键清理其余未收藏项并秒切下一批">
+        <Icon name="check" :size="14" /> 拣选
+      </button>
       <button class="tab" :class="{ on: store.tab === 'fs' }" @click="switchTab('fs')">
         <Icon name="folder" :size="14" /> 文件系统
       </button>
@@ -78,6 +81,7 @@
       <select v-model="store.sort" class="sel" title="排序字段" @change="onFilterChange">
         <option v-if="store.tab === 'trash'" value="trashed_at">按删除时间（最新在前）</option>
         <option value="name">按名称</option>
+        <option value="path">按路径</option>
         <option value="size">按大小</option>
         <option value="mtime">按修改时间</option>
       </select>
@@ -85,7 +89,7 @@
         {{ store.order === 'asc' ? '↑' : '↓' }}
       </button>
 
-      <label v-if="store.tab !== 'trash'" class="chk" title="仅显示收藏">
+      <label v-if="store.tab !== 'trash' && store.tab !== 'pick'" class="chk" title="仅显示收藏">
         <input type="checkbox" v-model="store.favOnly" @change="onFilterChange" />
         <Icon name="star" :size="12" /> 仅收藏
       </label>
@@ -145,7 +149,7 @@ function onInput() {
   debounce = setTimeout(() => {
     store.q = qText.value.trim()
     emit('filter-change')
-  }, 150)
+  }, 300)
 }
 function onEnter() {
   clearTimeout(debounce)

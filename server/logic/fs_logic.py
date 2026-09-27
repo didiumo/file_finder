@@ -8,6 +8,7 @@ file_finder 文件系统浏览（fs）
 - 每项尝试与索引关联（root_id + rel_path 命中则携带 files.id，
   未索引的新文件 id=null，预览时提示“未索引”）
 """
+import asyncio
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -63,35 +64,37 @@ class FsLogic:
             raise ValueError("路径不在已配置的扫描根范围内")
         root, rel = resolved
 
-        # 实时读盘
-        entries: List[Tuple[str, bool, int, float]] = []
-        try:
-            with os.scandir(path) as it:
-                for e in it:
-                    if e.name in self.exclude_names:
-                        continue
-                    try:
-                        is_dir = e.is_dir(follow_symlinks=False)
-                        st = e.stat(follow_symlinks=False)
-                    except OSError:
-                        continue
-                    entries.append((e.name, is_dir, st.st_size, st.st_mtime))
-        except OSError as e:
-            raise ValueError(f"无法读取目录：{e}")
-
-        # 目录优先 + 排序字段（name/size/mtime；降序时目录块与文件块各自反向）
         desc = str(order).lower() == "desc"
-        sort_field = {"name": 0, "size": 2, "mtime": 3}.get(sort, 0)
+        sort_field = {"name": 0, "path": 0, "size": 2, "mtime": 3}.get(sort, 0)
 
-        def sort_fn(e):
-            return (0 if e[1] else 1, e[sort_field], e[0].lower())
+        # 实时读盘（异步线程池执行，防 UNC 网络延迟阻塞事件循环）
+        def _read_and_sort():
+            entries: List[Tuple[str, bool, int, float]] = []
+            try:
+                with os.scandir(path) as it:
+                    for e in it:
+                        if e.name in self.exclude_names:
+                            continue
+                        try:
+                            is_dir = e.is_dir(follow_symlinks=False)
+                            st = e.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        entries.append((e.name, is_dir, st.st_size, st.st_mtime))
+            except OSError as e:
+                raise ValueError(f"无法读取目录：{e}")
 
-        entries.sort(key=sort_fn)
-        if desc:
-            dirs = sorted([x for x in entries if x[1]], key=lambda x: (x[sort_field], x[0].lower()), reverse=True)
-            files = sorted([x for x in entries if not x[1]], key=lambda x: (x[sort_field], x[0].lower()), reverse=True)
-            entries = dirs + files
+            def sort_fn(e):
+                return (0 if e[1] else 1, e[sort_field], e[0].lower())
 
+            entries.sort(key=sort_fn)
+            if desc:
+                dirs = sorted([x for x in entries if x[1]], key=lambda x: (x[sort_field], x[0].lower()), reverse=True)
+                files = sorted([x for x in entries if not x[1]], key=lambda x: (x[sort_field], x[0].lower()), reverse=True)
+                entries = dirs + files
+            return entries
+
+        entries = await asyncio.to_thread(_read_and_sort)
         total = len(entries)
         page = max(1, int(page))
         page_size = max(1, min(2000, int(page_size)))
@@ -109,7 +112,8 @@ class FsLogic:
             for i, (nm, is_dir, sz, mt) in enumerate(entries):
                 k = (0 if is_dir else 1, (nm if sort_field == 0 else (sz if sort_field == 2 else mt)), nm.lower())
                 a = (0 if after_dir_b else 1, a_val, after_name.lower())
-                if k > a:
+                cmp = (k < a) if desc else (k > a)
+                if cmp:
                     start = i
                     break
             if start is None:

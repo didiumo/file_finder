@@ -60,7 +60,7 @@ const canvasHeight = computed(() => rows.value * props.rowHeight)
 const pageOf = idx => Math.floor(idx / props.pageSize)
 
 function fetchAndCache(page, force) {
-  if (!force && (pages.has(page) || inflight.has(page))) return
+  if (!force && (pages.has(page) || inflight.has(page))) return inflight.get(page)
   const seq = mutationSeq
   const p = Promise.resolve(props.fetchPage(page))
     .then(res => {
@@ -75,6 +75,22 @@ function fetchAndCache(page, force) {
       version.value++
     })
   inflight.set(page, p)
+  return p
+}
+
+// 批量确保指定页码区间的数据全部加载入内存（供复制序列、完整性校验等使用）
+async function ensurePagesLoaded(minPage, maxPage) {
+  const promises = []
+  for (let p = minPage; p <= maxPage; p++) {
+    if (pages.has(p)) continue
+    if (inflight.has(p)) {
+      promises.push(inflight.get(p))
+    } else {
+      const pr = fetchAndCache(p)
+      if (pr) promises.push(pr)
+    }
+  }
+  if (promises.length) await Promise.all(promises)
 }
 
 // 局部数据变更：链式补位，删除瞬间不闪烁、翻页无空洞
@@ -83,9 +99,10 @@ function fetchAndCache(page, force) {
 // totalHint 可选：直接更新总数（后端返回的实际变化数，含目录子树）
 function removeAndRefresh(ids, totalHint) {
   const set = new Set(ids)
+  const matchId = it => it && (set.has(it.id) || (it.fav_id && set.has(it.fav_id)))
   let firstAffected = Infinity
   for (const [page, items] of pages) {
-    if (items.some(it => it && set.has(it.id))) {
+    if (items.some(matchId)) {
       if (page < firstAffected) firstAffected = page
     }
   }
@@ -103,7 +120,7 @@ function removeAndRefresh(ids, totalHint) {
   for (let i = 0; i < affected.length; i++) {
     const page = affected[i]
     const items = pages.get(page) || []
-    const kept = items.filter(it => !(it && set.has(it.id)))
+    const kept = items.filter(it => !matchId(it))
     if (deficit > 0) {
       const take = Math.min(deficit, kept.length)
       if (take > 0) {
@@ -158,7 +175,13 @@ const visibleCells = computed(() => {
       const page = pageOf(index)
       fetchAndCache(page)
       const list = pages.get(page)
-      cells.push({ index, row: r, col, item: list ? list[index - page * props.pageSize] : null })
+      const offset = index - page * props.pageSize
+      const item = list ? list[offset] : null
+      // 容错与自愈：若当前页已返回但列表长度不足以覆盖 offset（曾发生删除且后续页未补位），立即强制重新拉取本页
+      if (list && item === undefined && !inflight.has(page)) {
+        fetchAndCache(page, true)
+      }
+      cells.push({ index, row: r, col, item: item || null })
     }
   }
   // 释放远离可视区的页（内存有界）
@@ -199,9 +222,13 @@ function onScroll() {
 }
 
 function reset() {
+  mutationSeq++
   pages.clear()
   inflight.clear()
+  scrollTop.value = 0
+  if (viewportEl.value) viewportEl.value.scrollTop = 0
   version.value++
+  fetchAndCache(0, true)
 }
 // 轻量重渲染：数据不变但强制重算可视单元格
 function bump() {
@@ -220,6 +247,18 @@ function patchItemByRef(target, patch) {
   }
   return false
 }
+
+function patchItemById(id, patch) {
+  for (const list of pages.values()) {
+    const i = list.findIndex(it => it && (it.id === id || it.fav_id === id))
+    if (i >= 0) {
+      list[i] = { ...list[i], ...patch }
+      version.value++
+      return list[i]
+    }
+  }
+  return null
+}
 function getScrollTop() {
   return viewportEl.value ? viewportEl.value.scrollTop : 0
 }
@@ -232,8 +271,94 @@ function scrollTo(y) {
   version.value++
 }
 
+// 确保指定绝对索引项处于当前可视区域内（上下方向键滚动对齐）
+function ensureIndexVisible(index) {
+  if (!viewportEl.value || index < 0 || index >= props.total) return
+  const c = cols.value
+  if (c <= 0 || props.rowHeight <= 0) return
+  const row = Math.floor(index / c)
+  const itemTop = row * props.rowHeight
+  const itemBottom = itemTop + props.rowHeight
+  const viewTop = scrollTop.value
+  const viewH = viewportH.value || viewportEl.value.clientHeight || 500
+  const viewBottom = viewTop + viewH
+
+  const pad = 12 // 留适当边距
+  if (itemTop < viewTop + pad) {
+    scrollTo(Math.max(0, itemTop - pad))
+  } else if (itemBottom > viewBottom - pad) {
+    scrollTo(itemBottom - viewH + pad)
+  }
+}
+
+// 根据绝对索引获取条目数据对象（若所在页尚未加载则触发拉取）
+function getItemByIndex(index) {
+  if (index < 0 || index >= props.total) return null
+  const page = pageOf(index)
+  fetchAndCache(page)
+  const list = pages.get(page)
+  return list ? list[index - page * props.pageSize] : null
+}
+
+// 根据 ID 或 fav_id 查找条目在全局数据中的绝对索引
+function findIndexById(id) {
+  if (!id) return -1
+  for (const [page, list] of pages.entries()) {
+    if (!list) continue
+    const offset = list.findIndex(it => it && (it.id === id || it.fav_id === id))
+    if (offset >= 0) return page * props.pageSize + offset
+  }
+  return -1
+}
+
+// 刷新当前视口所覆盖的所有页（在后台删除任务完成等时机调用，彻底抹平空洞）
+function refreshVisible() {
+  const c = cols.value
+  if (c <= 0 || props.rowHeight <= 0 || props.total <= 0) return
+  const firstRow = Math.max(0, Math.floor(scrollTop.value / props.rowHeight) - props.bufferRows)
+  const lastRow = Math.min(rows.value - 1, Math.ceil((scrollTop.value + viewportH.value) / props.rowHeight) + props.bufferRows)
+  const pMin = pageOf(firstRow * c)
+  const pMax = pageOf(Math.min(props.total - 1, lastRow * c + c - 1))
+  for (let p = Math.max(0, pMin); p <= Math.max(0, pMax); p++) {
+    fetchAndCache(p, true)
+  }
+}
+
 let ro = null
+
+/* ---------- Shift / Alt+Shift 滚轮快速纵向滚动 ---------- */
+function onWheel(e) {
+  if (!e.shiftKey) return
+  // 阻止浏览器原生把 Shift+滚轮 转为水平滚动的默认行为
+  e.preventDefault()
+
+  // 跨设备与浏览器兼容提取步长：优先取垂直分量，若为 0 则取水平转换分量
+  let rawDelta = 0
+  if (Math.abs(e.deltaY) > 0) rawDelta = e.deltaY
+  else if (Math.abs(e.deltaX) > 0) rawDelta = e.deltaX
+  if (!rawDelta) return
+
+  let baseDelta = rawDelta
+  // 规范化不同设备的 deltaMode (0: 像素, 1: 行, 2: 页)
+  if (e.deltaMode === 1) baseDelta *= 30
+  else if (e.deltaMode === 2) baseDelta *= (viewportH.value || 600)
+
+  // 速度倍率：
+  // - Shift + 滚轮：4 倍速快速滚动（均匀连贯扫视）
+  // - Alt + Shift + 滚轮：12 倍速极速滚动
+  const multiplier = e.altKey ? 12 : 4
+  const step = baseDelta * multiplier
+
+  if (viewportEl.value) {
+    viewportEl.value.scrollTop += step
+    scrollTop.value = viewportEl.value.scrollTop
+  }
+}
+
 onMounted(() => {
+  if (viewportEl.value) {
+    viewportEl.value.addEventListener('wheel', onWheel, { passive: false })
+  }
   ro = new ResizeObserver(() => {
     if (!viewportEl.value) return
     viewportH.value = viewportEl.value.clientHeight
@@ -246,13 +371,36 @@ onMounted(() => {
   // total=0 时没有任何可见单元格，必须主动拉取第 0 页，否则首屏永远空白
   fetchAndCache(0)
 })
-onBeforeUnmount(() => { ro && ro.disconnect() })
+onBeforeUnmount(() => {
+  if (viewportEl.value) {
+    viewportEl.value.removeEventListener('wheel', onWheel)
+  }
+  ro && ro.disconnect()
+})
 
 watch(() => props.total, () => { version.value++ })
 function getCells() {
   return [...cellRefs.values()].filter(c => c.el && c.item)
 }
-defineExpose({ reset, bump, patchItemByRef, pages, scrollTo, getScrollTop, getCells, removeAndRefresh, clearAll })
+defineExpose({
+  reset,
+  bump,
+  patchItemByRef,
+  patchItemById,
+  pages,
+  cols,
+  scrollTo,
+  getScrollTop,
+  getCells,
+  removeAndRefresh,
+  clearAll,
+  ensureIndexVisible,
+  getItemByIndex,
+  findIndexById,
+  refreshVisible,
+  ensurePagesLoaded,
+  pageSize: computed(() => props.pageSize),
+})
 </script>
 
 <style scoped>

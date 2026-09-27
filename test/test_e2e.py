@@ -43,11 +43,11 @@ ok = True
 sb = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_sandbox.py")
 subprocess.run([sys.executable, sb], check=True, capture_output=True)
 
-# 0b. 清理历史收藏 + 清空回收站（保证幂等）
-st, old_favs = req("GET", "/favorites?page_size=1000")
-for f in old_favs["data"]["items"]:
-    req("DELETE", f"/favorites/{f['fav_id']}")
-req("POST", "/trash/empty", {})
+# 0b. 仅清理沙箱对应的历史收藏（绝不影响用户真实收藏）
+st, old_favs = req("GET", "/favorites?root_id=3&page_size=1000")
+if isinstance(old_favs, dict) and "data" in old_favs and "items" in old_favs["data"]:
+    for f in old_favs["data"]["items"]:
+        req("DELETE", f"/favorites/{f['fav_id']}")
 
 # 1. 扫描沙箱
 st, r = req("POST", "/roots/3/scan", {"mode": "incremental"})
@@ -106,7 +106,7 @@ st, r = req("POST", "/favorites/toggle", {"file_id": files["readme.md"]["id"]})
 ok &= check("favorite toggle off", r["data"]["favorite"] is False)
 st, r = req("POST", "/favorites/toggle", {"file_id": files["readme.md"]["id"]})
 st, r2 = req("POST", "/favorites/toggle", {"file_id": files["photo.png"]["id"]})
-st, fav = req("GET", "/favorites")
+st, fav = req("GET", "/favorites?root_id=3")
 ok &= check("favorites list=2", fav["data"]["total"] == 2, f"total={fav['data']['total']}")
 ok &= check("favorite card fields", all(k in fav["data"]["items"][0] for k in ("name", "size", "mtime", "exists_now")))
 

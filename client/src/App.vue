@@ -47,10 +47,63 @@
       <button class="rs-btn" @click="showRoots = true">查看/管理</button>
     </div>
 
+    <!-- 拣选模式专用控制条 -->
+    <div class="pickstrip" v-if="store.tab === 'pick'">
+      <div class="ps-stat">
+        <span class="ps-tag">第 {{ store.pickPage }} 批</span>
+        <span class="ps-total">本批共 <strong>{{ pickBatchItems.length }}</strong> 项</span>
+        <span class="rs-sep">·</span>
+        <span class="ps-fav"><Icon name="star" :size="12" /> 已选 <strong>{{ pickFavCount }}</strong> 项</span>
+        <span class="rs-sep">·</span>
+        <span class="ps-unfav"><Icon name="trash" :size="12" /> 待删 <strong>{{ pickUnfavCount }}</strong> 项</span>
+        <span class="rs-sep">·</span>
+        <span class="ps-remain">剩余待拣选约 <strong>{{ formatCount(store.pickTotal) }}</strong> 项</span>
+      </div>
+
+      <div class="ps-actions">
+        <label class="ps-opt" title="调整每批加载数量（默认 200 项）">
+          每批
+          <select v-model.number="store.pickBatchSize" class="ps-sel" @change="onPickBatchSizeChange">
+            <option :value="50">50 项</option>
+            <option :value="100">100 项</option>
+            <option :value="200">200 项 (默认)</option>
+            <option :value="300">300 项</option>
+            <option :value="500">500 项</option>
+          </select>
+        </label>
+
+        <label class="ps-chk" title="若开启，删除时会弹出确认框；若关闭，一键直接清理未收藏项并秒切下一批">
+          <input type="checkbox" v-model="store.pickConfirmDelete" @change="persistFilters" />
+          删除前确认
+        </label>
+
+        <button v-if="store.pickPage > 1" class="rs-btn" title="查看上一批" @click="pickPrevBatch">
+          ⏮️ 上一批
+        </button>
+        <button class="rs-btn" title="不删除当前未收藏项，直接浏览下一批" @click="pickSkipBatch">
+          ⏭️ 跳过本批
+        </button>
+        <button class="rs-btn" title="刷新当前批次" @click="onFilterChange">
+          🔄 刷新本批
+        </button>
+
+        <button
+          class="st-btn danger ps-btn-del"
+          :disabled="pickBatchItems.length === 0 || pickDeleting"
+          title="将本批中未打星收藏的文件全部移入回收站，并自动加载下一批（快捷键：Ctrl+Enter）"
+          @click="pickDeleteAndNext"
+        >
+          <Icon name="trash" :size="13" />
+          {{ pickDeleting ? '正在清理...' : `删除未收藏并进入下一批 (${pickUnfavCount})` }}
+        </button>
+      </div>
+    </div>
+
     <div class="main">
       <div class="list-area" @mousedown="onAreaMouseDown">
         <!-- 表格表头：列标题 + 排序 + 可拖拽列宽 -->
         <div v-if="isTable" class="tbl-head">
+          <div class="th" style="width: 44px; justify-content: center; color: #6b7280; font-size: 11px;">#</div>
           <div class="th th-ic"></div>
           <div v-for="col in tableColsDef" :key="col.key" class="th"
                :class="{ sortable: colSortable(col.key), on: store.sort === col.key }"
@@ -68,7 +121,7 @@
           :key="listKey"
           :head-height="isTable ? 31 : 0"
           :total="activeTotal"
-          :page-size="pageSize"
+          :page-size="store.tab === 'pick' ? store.pickBatchSize : pageSize"
           :fetch-page="fetchPage"
           :grid="store.viewMode !== 'table'"
           :col-width="cfg.colWidth"
@@ -78,9 +131,18 @@
         >
           <template #item="{ item, index }">
             <!-- 表格视图（列宽与表头一致，可随表头拖拽调整） -->
-            <div v-if="isTable" class="trow" :class="{ sel: isSel(item) }"
-                 @click="onCellClick(item, $event)" @dblclick="onCellDbl(item)"
-                 @contextmenu.prevent="onCtx($event, item)">
+            <div v-if="isTable" class="trow" :class="{ sel: isSel(item), pressing: rowPressKey === selKeyOf(item) }"
+                 @mousedown="onRowMouseDown(item, $event)"
+                 @mousemove="onRowMouseMove(item, $event)"
+                 @mouseup="onRowMouseUp(item, $event)"
+                 @mouseleave="onRowMouseLeave(item, $event)"
+                 @touchstart.passive="onRowTouchStart(item, $event)"
+                 @touchmove.passive="onRowTouchMove(item, $event)"
+                 @touchend="onRowTouchEnd(item, $event)"
+                 @touchcancel="onRowTouchCancel(item, $event)"
+                 @click="onRowClick(item, $event)" @dblclick="onCellDbl(item)"
+                 @contextmenu="onRowCtx($event, item, index)">
+              <span style="width: 44px; text-align: center; color: #6b7280; font-size: 11px; font-family: monospace; user-select: none;">#{{ index + 1 }}</span>
               <span class="t-ic" :style="{ color: item && itemColor(item), width: 26 }">
                 <Icon v-if="item" :name="iconOf(item)" :size="15" />
               </span>
@@ -99,12 +161,14 @@
             <FileCard
               v-else
               :item="item"
+              :index="index"
               :mode="store.viewMode"
               :selected="isSel(item)"
+              :favorite="!!(item && item.favorite)"
               @select="(it, e) => onCellClick(it, e)"
               @fav="onToggleFav"
               @dbl="onCellDbl"
-              @ctx="onCtx($event, item)"
+              @ctx="onCtx($event, item, index)"
             />
           </template>
         </VirtualList>
@@ -162,13 +226,18 @@
         </div>
       </div>
 
-      <PreviewPanel v-if="store.showPreview && store.tab !== 'trash'" @deleted="onFilterChange" @enter="onPreviewEnter" />
+      <PreviewPanel
+        v-if="store.showPreview && store.tab !== 'trash'"
+        @fav-change="onPreviewFavChange"
+        @item-deleted="onPreviewDeleted"
+        @enter="onPreviewEnter"
+      />
     </div>
 
     <TaskBar ref="taskBarRef" />
 
-    <div v-if="ctxMenu" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @mousedown.stop @contextmenu.prevent>
-      <button v-for="it in ctxMenu.items" :key="it.key" class="ctx-item" :class="{ danger: it.danger }" @click="runCtx(it.key)">
+    <div v-if="ctxMenu" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @contextmenu.prevent>
+      <button v-for="it in ctxMenu.items" :key="it.key" class="ctx-item" :class="{ danger: it.danger }" @click.stop="runCtx(it.key)">
         <Icon :name="it.icon" :size="14" />
         {{ it.label }}
       </button>
@@ -184,6 +253,14 @@
         </div>
       </div>
     </div>
+
+    <!-- 浮层轻量 Toast 提示 -->
+    <transition name="toast-fade">
+      <div v-if="toastMsg" class="toast-tip">
+        <Icon name="check" :size="15" />
+        <span>{{ toastMsg }}</span>
+      </div>
+    </transition>
 
     <RootManager :open="showRoots" @close="showRoots = false" @task="trackTask" />
     <CollectDialog :open="showCollect" @close="showCollect = false" @task="trackTask" @done="onFilterChange" />
@@ -201,18 +278,32 @@ import RootManager from './components/RootManager.vue'
 import CollectDialog from './components/CollectDialog.vue'
 import Icon from './components/Icon.vue'
 import { store, viewCfg, tableCols, saveTableCols } from './store'
-import { trackTask } from './tasks'
+import { trackTask, loadActiveTasks } from './tasks'
 import { apiSearch, apiFavorites, apiRoots, apiStats, apiFiles, apiFs, apiTrash } from './api'
 import { formatSize, formatDate } from './utils/format'
 import { fileIcon, fileColor } from './utils/fileTypes'
 
 const pageSize = 300
+const sessionStartTime = ref(Date.now() / 1000)
 const listRef = ref(null)
 
 /* ---------- 多选（Ctrl/Shift + 框选） ---------- */
 const selKeys = ref(new Set())   // 已选唯一键集合（跨页累积）
 let selAnchor = null             // Shift 范围锚点（唯一键）
 const pageItems = {}             // 页索引 -> items（范围选择的有序来源）
+const deletedIds = ref(new Set()) // 本地黑名单：已被移入回收站的条目 ID（避免重拉脏数据穿透）
+
+function deductTotal(count) {
+  if (store.tab === 'trash') {
+    store.trashTotal = Math.max(0, store.trashTotal - count)
+    return
+  }
+  if (store.tab === 'favorites') store.favTotal = Math.max(0, store.favTotal - count)
+  else if (store.tab === 'fs') store.fsTotal = Math.max(0, store.fsTotal - count)
+  else if (store.tab === 'pick') store.pickTotal = Math.max(0, store.pickTotal - count)
+  else store.searchTotal = Math.max(0, store.searchTotal - count)
+  store.trashTotal += count
+}
 
 function selKeyOf(item) {
   if (!item) return null
@@ -257,7 +348,7 @@ function colStyle(col) {
 }
 function colSortable(key) {
   if (store.tab === 'fs') return ['name', 'size', 'mtime'].includes(key)
-  if (store.tab === 'favorites') return ['name', 'size', 'mtime'].includes(key)
+  if (store.tab === 'favorites') return ['name', 'size', 'mtime', 'path'].includes(key)
   return ['name', 'ext', 'size', 'mtime', 'path'].includes(key)
 }
 function onSortHead(key) {
@@ -299,8 +390,12 @@ const listKey = ref(0)
 const deleting = ref(null)
 const initialLoading = ref(true)
 const loadedPages = ref(0)
-const pageCursors = [null]   // pageCursors[n] = 第 n 页的入参游标（来自 n-1 页响应的 next_cursor）
-const fsCursors = [null]     // 文件系统浏览的游标（与 pageCursors 隔离）
+
+/* ---------- 拣选模式（Pick Mode）批次状态 ---------- */
+const pickBatchItems = ref([])
+const pickDeleting = ref(false)
+const pickFavCount = computed(() => pickBatchItems.value.filter(i => i && (i.favorite || i.fav_id)).length)
+const pickUnfavCount = computed(() => Math.max(0, pickBatchItems.value.length - pickFavCount.value))
 
 const cfg = computed(() => viewCfg())
 const isTable = computed(() => store.viewMode === 'table')
@@ -308,9 +403,10 @@ const activeTotal = computed(() => {
   if (store.tab === 'favorites') return store.favTotal
   if (store.tab === 'fs') return store.fsTotal
   if (store.tab === 'trash') return store.trashTotal
+  if (store.tab === 'pick') return pickBatchItems.value.length
   return store.searchTotal
 })
-const loadedCount = computed(() => Math.min(loadedPages.value * pageSize, activeTotal.value))
+const loadedCount = computed(() => Math.min(loadedPages.value * (store.tab === 'pick' ? store.pickBatchSize : pageSize), activeTotal.value))
 const currentRoot = computed(() => {
   const rs = store.roots || []
   if (store.rootId) return rs.find(r => r.id === store.rootId) || null
@@ -321,11 +417,13 @@ const emptyText = computed(() => {
   if (store.tab === 'favorites') return '暂无收藏内容'
   if (store.tab === 'fs') return '目录为空'
   if (store.tab === 'trash') return '回收站是空的'
+  if (store.tab === 'pick') return '当前范围内的未收藏文件已全部拣选完毕！'
   return '没有匹配的文件'
 })
 const emptySub = computed(() => {
   if (store.tab === 'fs') return '可点击「↑ 上级」返回，或在「设置」中添加扫描根目录'
   if (store.tab === 'trash') return '删除的文件会先进入回收站，在这里可恢复或彻底删除'
+  if (store.tab === 'pick') return '已无符合当前条件的未收藏文件，可切换扫描根或类型继续拣选'
   return '可尝试调整搜索词 / 过滤条件，或在「设置」中添加扫描根目录'
 })
 
@@ -345,7 +443,7 @@ function fsAbsPath() {
 
 /* ---------- 数据装配 ---------- */
 
-function searchParams(page, cursor) {
+function searchParams(page) {
   const scope = store.searchScope || {}
   const p = {
     q: store.q,
@@ -355,11 +453,11 @@ function searchParams(page, cursor) {
     ext: store.ext,
     fav_only: store.favOnly ? 1 : null,
     hide_fav: store.hideFav ? 1 : null,
+    hide_fav_before: store.hideFav ? sessionStartTime.value : null,
     sort: store.sort,
     order: store.order,
     page,
     page_size: pageSize,
-    ...(cursor || {}),
   }
   // 空参数直接去掉，避免服务端误判
   for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]
@@ -397,39 +495,62 @@ async function fetchPage(pageIdx) {
     res.data.items = res.data.items.map(t => ({ ...t, is_dir: !!t.is_dir }))
   } else if (store.tab === 'fs') {
     if (!store.fsRoot) return { total: 0, items: [] }
-    const cursor = fsCursors[pageIdx] || null
     const p = {
       path: fsAbsPath(),
       page: pageIdx + 1,
       page_size: pageSize,
       sort: store.sort,
       order: store.order,
-      ...(cursor || {}),
     }
     res = await apiFs.list(p)
     if (gen !== listKey.value) return { total: 0, items: [] }
     store.fsTotal = res.data.total
-    fsCursors[pageIdx + 1] = res.data.next_cursor || null
+  } else if (store.tab === 'pick') {
+    // 拣选模式：固定取当前批次，天然开启 hide_fav = 1（只拉取未收藏项供用户挑选）
+    const scope = store.searchScope || {}
+    const p = {
+      q: store.q,
+      root_id: scope.root_id != null ? scope.root_id : store.rootId,
+      prefix: scope.prefix || null,
+      regex: store.regex ? 1 : null,
+      ext: store.ext,
+      hide_fav: 1,
+      sort: store.sort,
+      order: store.order,
+      page: store.pickPage,
+      page_size: store.pickBatchSize,
+    }
+    for (const k of Object.keys(p)) if (p[k] === null || p[k] === undefined || p[k] === '') delete p[k]
+    res = await apiSearch(p)
+    if (gen !== listKey.value) return { total: 0, items: [] }
+    store.pickTotal = res.data.total
   } else {
-    // 游标分页：顺序滚动时深翻页不重扫 OFFSET
-    const cursor = pageCursors[pageIdx] || null
-    res = await apiSearch(searchParams(pageIdx + 1, cursor))
+    // 确定性幂等分页：基于固定页码与大小，保证慢滚与快滚顺序绝对严格一致
+    res = await apiSearch(searchParams(pageIdx + 1))
     if (gen !== listKey.value) return { total: 0, items: [] }
     store.searchTotal = res.data.total
-    pageCursors[pageIdx + 1] = res.data.next_cursor || null
   }
-  pageItems[pageIdx] = res.data.items || []
-  return { total: res.data.total, items: res.data.items || [] }
+  let items = res.data.items || []
+  if (store.tab !== 'trash' && deletedIds.value.size) {
+    items = items.filter(it => it && !deletedIds.value.has(it.id) && (!it.fav_id || !deletedIds.value.has(it.fav_id)))
+  }
+  if (store.tab === 'pick') {
+    pickBatchItems.value = items
+  }
+  pageItems[pageIdx] = items
+  return { total: activeTotal.value, items }
 }
 
 function onTotalUpdate(total) {
   if (store.tab === 'favorites') store.favTotal = total
   else if (store.tab === 'fs') store.fsTotal = total
   else if (store.tab === 'trash') store.trashTotal = total
+  else if (store.tab === 'pick') store.pickTotal = total
   else store.searchTotal = total
 }
 
 function onFilterChange() {
+  sessionStartTime.value = Date.now() / 1000
   // 文件系统 Tab：无浏览根或根已被删除时，重置为第一个扫描根
   if (store.tab === 'fs') {
     const still = store.roots.find(r => r.id === (store.fsRoot && store.fsRoot.id))
@@ -439,21 +560,54 @@ function onFilterChange() {
     }
   }
   loadedPages.value = 0
-  pageCursors.length = 0
-  pageCursors[0] = null
-  fsCursors.length = 0
-  fsCursors[0] = null
-  listKey.value++          // 重建 VirtualList（清空页缓存）
   store.selected = null
   clearSelection()
   store.previewKey++
   refreshStats()
+  if (listRef.value) {
+    listRef.value.reset()
+  } else {
+    listKey.value++
+  }
   // 内容微变（删除/收藏/恢复等）时恢复滚动位置，避免跳回顶部
   if (keepPos) {
     keepPos = false
     const target = preservePos
     nextTick(() => { if (target && listRef.value) listRef.value.scrollTo(target) })
   }
+}
+
+function onPreviewFavChange({ item, favorite }) {
+  if (store.tab === 'favorites') {
+    if (!favorite) {
+      const curTotal = store.favTotal
+      if (listRef.value) listRef.value.removeAndRefresh([item.id, item.fav_id], Math.max(0, curTotal - 1))
+      store.favTotal = Math.max(0, curTotal - 1)
+      store.selected = null
+    }
+  } else {
+    if (favorite) store.favTotal++
+    else store.favTotal = Math.max(0, store.favTotal - 1)
+    if (listRef.value) {
+      listRef.value.patchItemById(item.id, { favorite })
+    }
+    if (store.tab === 'pick') {
+      const it = pickBatchItems.value.find(i => i && i.id === item.id)
+      if (it) it.favorite = favorite
+    }
+  }
+  refreshStats()
+}
+
+function onPreviewDeleted(fileId) {
+  deletedIds.value.add(fileId)
+  deductTotal(1)
+  for (const p of Object.keys(pageItems)) {
+    pageItems[p] = (pageItems[p] || []).filter(it => it.id !== fileId)
+  }
+  if (listRef.value) listRef.value.removeAndRefresh([fileId], activeTotal.value)
+  store.selected = null
+  refreshStats()
 }
 
 function clearScope() {
@@ -555,6 +709,98 @@ function onCellClick(item, e) {
   store.previewKey++
 }
 
+/* ---------- 表格行长按收藏 / 取消收藏（<= 0.5s，设计为 400ms） ---------- */
+const rowPressKey = ref(null)
+let rowPressTimer = null
+let rowStartX = 0
+let rowStartY = 0
+let rowDidLongPress = false
+
+function triggerRowLongPress(item) {
+  if (!item) return
+  rowDidLongPress = true
+  rowPressKey.value = null
+  rowPressTimer = null
+  if (typeof navigator !== 'undefined' && navigator.vibrate) {
+    try { navigator.vibrate(40) } catch {}
+  }
+  onToggleFav(item)
+}
+
+function cancelRowPress() {
+  if (rowPressTimer) {
+    clearTimeout(rowPressTimer)
+    rowPressTimer = null
+  }
+  rowPressKey.value = null
+}
+
+function onRowMouseDown(item, e) {
+  if (e.button !== 0 || !item) return
+  rowStartX = e.clientX
+  rowStartY = e.clientY
+  rowDidLongPress = false
+  rowPressKey.value = selKeyOf(item)
+  rowPressTimer = setTimeout(() => triggerRowLongPress(item), 400)
+}
+
+function onRowMouseMove(item, e) {
+  if (!rowPressTimer) return
+  const dx = Math.abs(e.clientX - rowStartX)
+  const dy = Math.abs(e.clientY - rowStartY)
+  if (dx > 8 || dy > 8) cancelRowPress()
+}
+
+function onRowMouseUp() {
+  cancelRowPress()
+}
+
+function onRowMouseLeave() {
+  cancelRowPress()
+}
+
+function onRowTouchStart(item, e) {
+  if (!item || !e.touches || e.touches.length !== 1) return
+  const t = e.touches[0]
+  rowStartX = t.clientX
+  rowStartY = t.clientY
+  rowDidLongPress = false
+  rowPressKey.value = selKeyOf(item)
+  rowPressTimer = setTimeout(() => triggerRowLongPress(item), 400)
+}
+
+function onRowTouchMove(item, e) {
+  if (!rowPressTimer || !e.touches || !e.touches.length) return
+  const t = e.touches[0]
+  const dx = Math.abs(t.clientX - rowStartX)
+  const dy = Math.abs(t.clientY - rowStartY)
+  if (dx > 8 || dy > 8) cancelRowPress()
+}
+
+function onRowTouchEnd() {
+  cancelRowPress()
+}
+
+function onRowTouchCancel() {
+  cancelRowPress()
+}
+
+function onRowCtx(e, item, index = -1) {
+  cancelRowPress()
+  e.preventDefault()
+  onCtx(e, item, index)
+}
+
+function onRowClick(item, e) {
+  if (rowDidLongPress) {
+    e.preventDefault()
+    e.stopPropagation()
+    rowDidLongPress = false
+    return
+  }
+  onCellClick(item, e)
+}
+
 /* ---------- 拉框多选 ---------- */
 let boxStart = null
 let boxEl = null
@@ -635,12 +881,25 @@ function onPreviewEnter() {
   else openFsDir(item)
 }
 
+/* ---------- 浮层轻量提示（Toast） ---------- */
+const toastMsg = ref('')
+let toastTimer = null
+function showToast(msg, duration = 3000) {
+  toastMsg.value = msg
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toastMsg.value = ''
+  }, duration)
+}
+
 /* ---------- 右键菜单 ---------- */
 const ctxMenu = ref(null)
+let ctxTarget = null
 let closeCtxFn = null
-function onCtx(e, item) {
+
+function onCtx(e, item, index = -1) {
   e.preventDefault()
-  // 右键项未选中 → 单选它
+  // 右键项未在选区中 → 单选它
   if (item) {
     const k = selKeyOf(item)
     if (!selKeys.value.has(k)) {
@@ -650,37 +909,71 @@ function onCtx(e, item) {
     store.selected = item
     store.previewKey++
   }
+  if ((index === undefined || index < 0) && item && listRef.value) {
+    index = listRef.value.findIndexById(item.id || item.fav_id)
+  }
+  ctxTarget = { item, index }
   ctxMenu.value = {
-    x: Math.min(e.clientX, window.innerWidth - 190),
-    y: Math.min(e.clientY, window.innerHeight - 200),
+    x: Math.min(e.clientX, window.innerWidth - 240),
+    y: Math.min(e.clientY, window.innerHeight - 240),
     items: menuItems(),
   }
-  if (closeCtxFn) window.removeEventListener('mousedown', closeCtxFn, true)
-  closeCtxFn = () => { ctxMenu.value = null }
-  window.addEventListener('mousedown', closeCtxFn, true)
+  if (closeCtxFn) {
+    window.removeEventListener('click', closeCtxFn)
+    window.removeEventListener('contextmenu', closeCtxFn)
+  }
+  closeCtxFn = (evt) => {
+    if (evt && evt.target && evt.target.closest('.ctx-menu')) return
+    ctxMenu.value = null
+    window.removeEventListener('click', closeCtxFn)
+    window.removeEventListener('contextmenu', closeCtxFn)
+    closeCtxFn = null
+  }
+  setTimeout(() => {
+    window.addEventListener('click', closeCtxFn)
+    window.addEventListener('contextmenu', closeCtxFn)
+  }, 10)
 }
+
 function menuItems() {
   const sel = selectedItems()
   const n = sel.length
   const one = sel[0]
+  const targetItem = ctxTarget?.item || one
+  let targetIdx = ctxTarget?.index ?? -1
+  if (targetIdx < 0 && targetItem && listRef.value) {
+    targetIdx = listRef.value.findIndexById(targetItem.id || targetItem.fav_id)
+  }
+  const seqLabel = targetIdx >= 0
+    ? `复制此前文件名序列（#1 ~ #${targetIdx + 1}，共 ${targetIdx + 1} 个）`
+    : '复制此前文件名序列'
+
   if (store.tab === 'trash') {
-    return [
+    const trashItems = [
       { key: 'restore', label: `恢复${n > 1 ? `（${n} 项）` : ''}`, icon: 'undo' },
       { key: 'purge', label: `彻底删除${n > 1 ? `（${n} 项）` : ''}`, icon: 'x', danger: true },
       { key: 'empty', label: '清空回收站', icon: 'trash', danger: true },
     ]
+    if (targetItem) {
+      trashItems.push({ key: 'copySequence', label: seqLabel, icon: 'copy' })
+    }
+    return trashItems
   }
   const items = []
   if (n === 1 && !one.is_dir && one.id) {
     items.push({ key: 'preview', label: '预览', icon: 'eye' })
   }
-  const fav = one && (one.fav_id || one.favorite)
+  const allFav = store.tab === 'favorites' || (n > 0 && sel.every(i => i.fav_id || i.favorite))
   items.push({
-    key: 'fav', label: fav ? '取消收藏' : (n > 1 ? `收藏（${n} 项）` : '收藏'),
+    key: 'fav',
+    label: allFav ? (n > 1 ? `取消收藏（${n} 项）` : '取消收藏') : (n > 1 ? `收藏（${n} 项）` : '收藏'),
     icon: 'star',
   })
   if (n === 1 && !one.is_dir && one.id) {
     items.push({ key: 'download', label: '下载', icon: 'download' })
+  }
+  if (targetItem) {
+    items.push({ key: 'copySequence', label: seqLabel, icon: 'copy' })
   }
   const deletable = sel.some(i => i.id)
   if (deletable) {
@@ -688,8 +981,88 @@ function menuItems() {
   }
   return items
 }
+
+async function copySequenceBeforeTarget() {
+  const targetItem = ctxTarget?.item || store.selected
+  if (!targetItem) {
+    showToast('⚠️ 未选中任何条目', 2000)
+    return
+  }
+
+  let targetIdx = ctxTarget?.index ?? -1
+  if (targetIdx < 0 && listRef.value) {
+    targetIdx = listRef.value.findIndexById(targetItem.id || targetItem.fav_id)
+  }
+  if (targetIdx < 0) targetIdx = 0
+
+  const count = targetIdx + 1
+  const pageSizeVal = listRef.value?.pageSize || pageSize || 300
+  const maxPage = Math.floor(targetIdx / pageSizeVal)
+
+  showToast(`正在提取第 1 ~ #${count} 项文件名...`, 2000)
+
+  // 确保 0 到 maxPage 的全部页均已缓存加载
+  if (listRef.value?.ensurePagesLoaded) {
+    await listRef.value.ensurePagesLoaded(0, maxPage)
+  }
+
+  const names = []
+  let globalIdx = 0
+  for (let p = 0; p <= maxPage; p++) {
+    const list = listRef.value?.pages?.get(p) || pageItems[p] || []
+    for (let i = 0; i < list.length; i++) {
+      if (globalIdx > targetIdx) break
+      const it = list[i]
+      if (it) {
+        names.push(it.name || it.rel_path || `Item_${globalIdx + 1}`)
+      }
+      globalIdx++
+    }
+  }
+
+  if (!names.length) {
+    showToast('⚠️ 未能提取到有效文件名', 2500)
+    return
+  }
+
+  const text = names.join('\n')
+  let copyOk = false
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text)
+      copyOk = true
+    }
+  } catch {}
+  if (!copyOk) {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    copyOk = document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+
+  window.__prevCopiedSequence = window.__lastCopiedSequence || null
+  window.__lastCopiedSequence = names
+
+  console.log(`%c[Sequence] 成功复制此前 ${names.length} 个文件名到剪贴板（#1 ~ #${targetIdx + 1}）：`, 'color:#4caf50;font-weight:bold;', names)
+  if (window.__prevCopiedSequence) {
+    console.log(`%c💡 控制台比对提示：直接在控制台执行 %ccompareSequences()%c 即可自动校验本次与上一次复制序列的子集关系与严格有序性！`, 'color:#4c8bf5;', 'color:#ffb300;font-weight:bold;', 'color:#4c8bf5;')
+  }
+
+  showToast(`✅ 已复制此前 ${names.length} 个文件名到剪贴板（#1 ~ #${targetIdx + 1}）`)
+}
+
 function runCtx(key) {
+  if (closeCtxFn) {
+    window.removeEventListener('click', closeCtxFn)
+    window.removeEventListener('contextmenu', closeCtxFn)
+    closeCtxFn = null
+  }
   ctxMenu.value = null
+  if (key === 'copySequence') return copySequenceBeforeTarget()
   if (key === 'fav') return batchFav()
   if (key === 'delete') return batchDelete()
   if (key === 'restore') return batchRestore()
@@ -716,15 +1089,53 @@ function markKeepPos() {
 
 /* ---------- 批量操作 ---------- */
 async function batchFav() {
-  const items = selectedItems().filter(i => !i.fav_id && i.id)
+  const items = selectedItems()
   if (!items.length) return
-  markKeepPos()
-  for (const it of items) {
-    try { await apiFavorites.toggle(it.id) } catch { /* 单条失败继续 */ }
+  // 判断所选项是否全部已收藏（或当前在收藏 Tab）
+  const allFav = store.tab === 'favorites' || items.every(i => i.fav_id || i.favorite)
+  if (allFav) {
+    // 批量取消收藏
+    for (const it of items) {
+      try {
+        if (it.fav_id) await apiFavorites.remove(it.fav_id)
+        else if (it.id) await apiFavorites.toggle(it.id)
+      } catch { /* 单条失败继续 */ }
+      it.favorite = false
+      if (listRef.value) listRef.value.patchItemById(it.id || it.fav_id, { favorite: false })
+    }
+    if (store.tab === 'favorites') {
+      const idsToRemove = items.map(i => i.id || i.fav_id)
+      if (listRef.value) listRef.value.removeAndRefresh(idsToRemove, Math.max(0, store.favTotal - items.length))
+      store.favTotal = Math.max(0, store.favTotal - items.length)
+    } else {
+      store.favTotal = Math.max(0, store.favTotal - items.length)
+    }
+    clearSelection()
+    refreshStats()
+  } else {
+    // 批量新增收藏（跳过已收藏的）
+    const toAdd = items.filter(i => !i.fav_id && !i.favorite && i.id)
+    if (!toAdd.length) {
+      alert('所选项中没有可收藏的已索引文件')
+      return
+    }
+    const ids = toAdd.map(i => i.id)
+    try {
+      const r = await apiFavorites.batch(ids)
+      const added = r?.data?.added || 0
+      store.favTotal += added
+      for (const it of toAdd) {
+        it.favorite = true
+        if (listRef.value) listRef.value.patchItemById(it.id, { favorite: true })
+      }
+      clearSelection()
+      refreshStats()
+    } catch (e) {
+      alert(`批量收藏失败: ${e.message}`)
+    }
   }
-  onFilterChange()
 }
-const batchFavTitle = '批量收藏所选项目（已收藏的跳过）'
+const batchFavTitle = '批量收藏所选项目（全部已收藏时则取消收藏）'
 async function batchDelete() {
   const items = selectedItems()
   const withId = items.filter(i => i.id)
@@ -736,60 +1147,155 @@ async function batchDelete() {
     alert(`${items.length - withId.length} 项未索引，无法删除；将删除其余 ${withId.length} 项`)
   }
   markKeepPos()
-  // 移入回收站可随时恢复，不做二次确认（高频操作）。分批删除并回显进度：
-  // 批次取小（20 个）且每批后 await nextTick 强制渲染，进度条平滑推进而非 0→100
-  const BATCH = 20
   const ids = withId.map(i => i.id)
-  deleting.value = { done: 0, total: ids.length }
-  let moved = 0
-  const errs = []
-  try {
-    for (let i = 0; i < ids.length; i += BATCH) {
-      const chunk = ids.slice(i, i + BATCH)
-      const r = await apiFiles.batchDelete(chunk)
-      deleting.value.done = Math.min(ids.length, i + chunk.length)
-      await nextTick()
-      moved += r.data?.moved || 0
-      errs.push(...(r.data?.errors || []))
-    }
-  } finally {
-    deleting.value = null
-  }
   clearSelection()
-  // 移动失败的文件并未删除（仍在原位置），保留在列表并明确提示，避免"删了又恢复"的错觉
-  const errSet = new Set(errs.map(e => e.rel_path))
-  const okItems = withId.filter(i => !errSet.has(i.rel_path))
-  if (errs.length) {
-    const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
-    alert(`有 ${errs.length} 项删除失败（文件被占用或网络共享不可写），已保留在列表中：${brief}`)
+
+  // 1. 立即加入已删除黑名单，避免任何并发拉取脏数据穿透
+  for (const id of ids) deletedIds.value.add(id)
+  for (const it of withId) {
+    if (it.fav_id) deletedIds.value.add(it.fav_id)
   }
-  // 局部刷新：只更新删除点之后的缓存，不重建整个列表（避免白屏）
-  const curTotal = store.tab === 'fs' ? store.fsTotal : store.searchTotal
-  if (listRef.value) listRef.value.removeAndRefresh(okItems.map(i => i.id), Math.max(0, curTotal - moved))
+
+  // 2. 扣减当前 Tab 的实际总数，并从虚拟列表与内存页中剔除
+  deductTotal(ids.length)
+  for (const p of Object.keys(pageItems)) {
+    pageItems[p] = (pageItems[p] || []).filter(it => !deletedIds.value.has(it.id))
+  }
+  if (listRef.value) listRef.value.removeAndRefresh(ids, activeTotal.value)
   else onFilterChange()
-  store.trashTotal += moved
-  refreshStats()
+
+  // 3. 提交后端处理
+  try {
+    const r = await apiFiles.batchDelete(ids)
+    const task_id = r?.data?.task_id
+
+    if (task_id) {
+      // 后端已创建后台异步删除任务：接入任务系统并在 TaskBar 实时回显进度
+      trackTask(task_id, (t) => {
+        refreshStats()
+        // 关键：任务完成后静默刷新当前可视区页，确保没有残存空洞
+        if (listRef.value) {
+          listRef.value.refreshVisible()
+        }
+        const errs = t?.detail?.errors || []
+        if (errs.length) {
+          const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+          alert(`有 ${errs.length} 项删除失败（文件被占用或无写权限）：${brief}`)
+          // 从 deletedIds 中移除失败项
+          for (const e of errs) {
+            const failedItem = withId.find(i => i.rel_path === e.rel_path)
+            if (failedItem) {
+              deletedIds.value.delete(failedItem.id)
+              if (failedItem.fav_id) deletedIds.value.delete(failedItem.fav_id)
+            }
+          }
+          onFilterChange()
+        } else {
+          // 成功完成：清空黑名单
+          for (const id of ids) deletedIds.value.delete(id)
+        }
+      })
+      return
+    }
+
+    // 同步返回模式（少量文件场景）：
+    const moved = r?.data?.moved || 0
+    const errs = r?.data?.errors || []
+    if (listRef.value) {
+      listRef.value.refreshVisible()
+    }
+    if (errs.length) {
+      const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+      alert(`有 ${errs.length} 项删除失败（已保留在列表中）：${brief}`)
+      for (const e of errs) {
+        const failedItem = withId.find(i => i.rel_path === e.rel_path)
+        if (failedItem) {
+          deletedIds.value.delete(failedItem.id)
+          if (failedItem.fav_id) deletedIds.value.delete(failedItem.fav_id)
+        }
+      }
+      onFilterChange()
+    } else {
+      for (const id of ids) deletedIds.value.delete(id)
+    }
+    refreshStats()
+  } catch (e) {
+    alert(`移入回收站失败: ${e.message}`)
+    for (const id of ids) deletedIds.value.delete(id)
+    onFilterChange()
+  }
 }
 async function batchRestore() {
   const items = selectedItems()
   if (!items.length) return
   markKeepPos()
-  const r = await apiTrash.restore(items.map(i => i.id))
-  const errs = r.data?.errors || []
-  if (errs.length) {
-    const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
-    alert(`已恢复 ${r.data.restored} 项；${errs.length} 项失败（目标位置已存在同名文件），保留在回收站：${brief}`)
-  } else {
-    alert(`已恢复 ${r.data.restored} 项`)
-  }
+  const ids = items.map(i => i.id)
   clearSelection()
-  const restored = r.data?.restored || 0
-  // 只移除恢复成功的条目，失败条目保留在回收站列表
-  const errSet = new Set(errs.map(e => e.rel_path))
-  const okItems = items.filter(i => !errSet.has(i.rel_path))
-  if (listRef.value) listRef.value.removeAndRefresh(okItems.map(i => i.id), Math.max(0, store.trashTotal - restored))
+
+  // 1. 立即加入已删除黑名单，避免任何并发拉取脏数据穿透
+  for (const id of ids) deletedIds.value.add(id)
+  for (const it of items) {
+    if (it.fav_id) deletedIds.value.add(it.fav_id)
+  }
+
+  // 2. 扣减当前 Tab 的实际总数，并从虚拟列表与内存页中剔除
+  deductTotal(ids.length)
+  for (const p of Object.keys(pageItems)) {
+    pageItems[p] = (pageItems[p] || []).filter(it => !deletedIds.value.has(it.id))
+  }
+  if (listRef.value) listRef.value.removeAndRefresh(ids, activeTotal.value)
   else onFilterChange()
-  refreshStats()
+
+  // 3. 提交后端处理
+  try {
+    const r = await apiTrash.restore(ids)
+    const task_id = r?.data?.task_id
+    if (task_id) {
+      trackTask(task_id, (t) => {
+        refreshStats()
+        if (listRef.value) listRef.value.refreshVisible()
+        const errs = t?.detail?.errors || []
+        if (errs.length) {
+          const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+          alert(`已恢复部分项；${errs.length} 项恢复失败（目标位置已存在同名文件），保留在回收站：${brief}`)
+          for (const e of errs) {
+            const failed = items.find(i => i.rel_path === e.rel_path)
+            if (failed) {
+              deletedIds.value.delete(failed.id)
+              if (failed.fav_id) deletedIds.value.delete(failed.fav_id)
+            }
+          }
+          onFilterChange()
+        } else {
+          for (const id of ids) deletedIds.value.delete(id)
+        }
+      })
+      return
+    }
+
+    // 同步返回
+    const errs = r.data?.errors || []
+    if (errs.length) {
+      const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+      alert(`已恢复 ${r.data.restored} 项；${errs.length} 项失败（目标位置已存在同名文件），保留在回收站：${brief}`)
+      for (const e of errs) {
+        const failed = items.find(i => i.rel_path === e.rel_path)
+        if (failed) {
+          deletedIds.value.delete(failed.id)
+          if (failed.fav_id) deletedIds.value.delete(failed.fav_id)
+        }
+      }
+      onFilterChange()
+    } else {
+      for (const id of ids) deletedIds.value.delete(id)
+      if (listRef.value) listRef.value.refreshVisible()
+    }
+    refreshStats()
+  } catch (e) {
+    alert(`恢复失败: ${e.message}`)
+    for (const id of ids) deletedIds.value.delete(id)
+    onFilterChange()
+  }
 }
 /* ---------- 自定义确认对话框（替代原生 confirm） ---------- */
 const confirmBox = ref(null)   // { title, message, danger, resolve }
@@ -815,39 +1321,110 @@ async function batchPurge() {
   const ok = await askConfirm('彻底删除', `确定彻底删除 ${items.length} 项？文件将从磁盘移除，此操作不可恢复。`, true)
   if (!ok) return
   markKeepPos()
-  const r = await apiTrash.purge(items.map(i => i.id))
-  const errs = r.data?.errors || []
-  if (errs.length) {
-    const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
-    alert(`已彻底删除 ${r.data.purged} 项；${errs.length} 项失败（文件被占用或网络问题），保留在回收站：${brief}`)
-  }
+  const ids = items.map(i => i.id)
   clearSelection()
-  const purged = r.data?.purged || 0
-  const errSet = new Set(errs.map(e => e.rel_path))
-  const okItems = items.filter(i => !errSet.has(i.rel_path))
-  if (listRef.value) listRef.value.removeAndRefresh(okItems.map(i => i.id), Math.max(0, store.trashTotal - purged))
+
+  // 1. 立即加入已删除黑名单，避免任何并发拉取脏数据穿透
+  for (const id of ids) deletedIds.value.add(id)
+
+  // 2. 扣减当前 Tab 的实际总数，并从虚拟列表与内存页中剔除
+  deductTotal(ids.length)
+  for (const p of Object.keys(pageItems)) {
+    pageItems[p] = (pageItems[p] || []).filter(it => !deletedIds.value.has(it.id))
+  }
+  if (listRef.value) listRef.value.removeAndRefresh(ids, activeTotal.value)
   else onFilterChange()
-  refreshStats()
+
+  // 3. 提交后端处理
+  try {
+    const r = await apiTrash.purge(ids)
+    const task_id = r?.data?.task_id
+    if (task_id) {
+      trackTask(task_id, (t) => {
+        refreshStats()
+        if (listRef.value) listRef.value.refreshVisible()
+        const errs = t?.detail?.errors || []
+        if (errs.length) {
+          const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+          alert(`有 ${errs.length} 项彻底删除失败（文件被占用或无写权限）：${brief}`)
+          for (const e of errs) {
+            const failed = items.find(i => i.rel_path === e.rel_path)
+            if (failed) deletedIds.value.delete(failed.id)
+          }
+          onFilterChange()
+        } else {
+          for (const id of ids) deletedIds.value.delete(id)
+        }
+      })
+      return
+    }
+
+    // 同步返回模式
+    const purged = r.data?.purged || 0
+    const errs = r.data?.errors || []
+    if (errs.length) {
+      const brief = errs.slice(0, 3).map(e => `${(e.rel_path || '').split('/').pop() || e.rel_path}（${e.error}）`).join('；')
+      alert(`已彻底删除 ${purged} 项；${errs.length} 项失败（文件被占用或网络问题），保留在回收站：${brief}`)
+      for (const e of errs) {
+        const failed = items.find(i => i.rel_path === e.rel_path)
+        if (failed) deletedIds.value.delete(failed.id)
+      }
+      onFilterChange()
+    } else {
+      for (const id of ids) deletedIds.value.delete(id)
+      if (listRef.value) listRef.value.refreshVisible()
+    }
+    refreshStats()
+  } catch (e) {
+    alert(`彻底删除失败: ${e.message}`)
+    for (const id of ids) deletedIds.value.delete(id)
+    onFilterChange()
+  }
 }
 async function trashEmpty() {
   const ok = await askConfirm('清空回收站', '回收站将被清空，所有条目彻底删除（磁盘文件同时移除），此操作不可恢复。', true)
   if (!ok) return
   markKeepPos()
-  const r = await apiTrash.empty()
   clearSelection()
-  const purged = r.data?.purged || 0
-  if (purged < store.trashTotal) {
-    alert(`已清空 ${purged} 项；${store.trashTotal - purged} 项删除失败（文件被占用或网络问题），保留在回收站`)
-    onFilterChange()   // 重拉显示真实剩余
-  } else if (listRef.value) {
-    listRef.value.clearAll(0)
+
+  try {
+    const r = await apiTrash.empty()
+    const task_id = r?.data?.task_id
+    if (task_id) {
+      // 乐观清空前端展示与计数
+      store.trashTotal = 0
+      if (listRef.value) listRef.value.clearAll(0)
+      trackTask(task_id, (t) => {
+        refreshStats()
+        if (listRef.value) listRef.value.clearAll(0)
+        onFilterChange()
+      })
+      return
+    }
+
+    // 同步返回模式
+    const purged = r.data?.purged || 0
+    if (purged < store.trashTotal) {
+      alert(`已清空 ${purged} 项；${store.trashTotal - purged} 项删除失败（文件被占用或网络问题），保留在回收站`)
+      onFilterChange()
+    } else if (listRef.value) {
+      listRef.value.clearAll(0)
+    }
+    store.trashTotal = 0
+    refreshStats()
+  } catch (e) {
+    alert(`清空回收站失败: ${e.message}`)
+    onFilterChange()
   }
-  store.trashTotal = purged
-  refreshStats()
 }
 
 async function onToggleFav(item) {
   if (!item) return
+  if (store.tab === 'trash') return
+  if (!item.id && !item.fav_id) {
+    alert('该文件未索引，无法收藏（请先扫描根目录）')
+    return
+  }
   if (store.tab === 'favorites') {
     if (item.fav_id) {
       markKeepPos()
@@ -857,12 +1434,86 @@ async function onToggleFav(item) {
     return
   }
   const r = await apiFavorites.toggle(item.id)
-  item.favorite = r.data.favorite
-  if (r.data.favorite) store.favTotal++
+  const fav = r.data.favorite
+  item.favorite = fav
+  if (fav) store.favTotal++
   else store.favTotal = Math.max(0, store.favTotal - 1)
-  // 列表数据是非响应式 Map：按引用替换条目对象 → :item 引用变化 → 卡片组件重新渲染（星标即时）
-  if (listRef.value && !listRef.value.patchItemByRef(item, { favorite: r.data.favorite })) {
-    listRef.value.bump() // 该页已释放未命中 → 兜底轻量重渲染
+
+  // 1. 通过 ID 替换 VirtualList 缓存生成新引用对象，并促发 version++ 响应式计算
+  if (listRef.value) {
+    const updated = listRef.value.patchItemById(item.id, { favorite: fav })
+    if (updated && store.selected && (store.selected.id === item.id || store.selected.fav_id === item.id)) {
+      store.selected = updated
+    }
+    listRef.value.bump()
+  }
+  // 2. 同步更新当前选中对象为新浅拷贝对象
+  if (store.selected && (store.selected.id === item.id || store.selected.fav_id === item.id)) {
+    store.selected = { ...store.selected, favorite: fav }
+  }
+  if (store.tab === 'pick') {
+    const it = pickBatchItems.value.find(i => i && i.id === item.id)
+    if (it) it.favorite = fav
+  }
+  store.previewKey++
+  refreshStats()
+}
+
+/* ---------- 拣选模式（Pick Mode）批次操作 ---------- */
+function onPickBatchSizeChange() {
+  persistFilters()
+  store.pickPage = 1
+  onFilterChange()
+}
+
+function pickSkipBatch() {
+  store.pickPage++
+  onFilterChange()
+}
+
+function pickPrevBatch() {
+  if (store.pickPage > 1) {
+    store.pickPage--
+    onFilterChange()
+  }
+}
+
+async function pickDeleteAndNext() {
+  if (pickDeleting.value) return
+  const toDelete = pickBatchItems.value.filter(it => it && !it.favorite && !it.fav_id && it.id)
+
+  if (toDelete.length === 0) {
+    showToast('本批次全部已收藏，无需删除，正在加载下一批...', 2000)
+    store.pickPage++
+    onFilterChange()
+    return
+  }
+
+  if (store.pickConfirmDelete) {
+    const ok = await askConfirm(
+      '移入回收站确认',
+      `确定将本批未收藏的 ${toDelete.length} 项移入回收站，并加载下一批吗？\n（已打星收藏的 ${pickFavCount.value} 项将被安全保留）`,
+      true
+    )
+    if (!ok) return
+  }
+
+  pickDeleting.value = true
+  const ids = toDelete.map(it => it.id)
+  for (const id of ids) deletedIds.value.add(id)
+  try {
+    const r = await apiFiles.batchDelete(ids)
+    showToast(`✅ 已将 ${ids.length} 项移入回收站，已为您加载下一批`, 2500)
+    refreshStats()
+    store.selected = null
+    clearSelection()
+    // 重新拉取当前批次（因为被删项已进入回收站，下一批数据自然浮上来）
+    onFilterChange()
+  } catch (e) {
+    alert(`移入回收站失败: ${e.message}`)
+    for (const id of ids) deletedIds.value.delete(id)
+  } finally {
+    pickDeleting.value = false
   }
 }
 
@@ -913,6 +1564,7 @@ async function init() {
       const r = store.roots.find(x => x.id === savedFsId)
       if (r) { store.fsRoot = r; store.fsRel = savedFsRel }
     }
+    loadActiveTasks()
   } catch (e) {
     console.error('初始化失败', e)
   }
@@ -920,12 +1572,12 @@ async function init() {
 }
 
 /* ---------- Tab 独立 hash 路由：刷新/后退停留在原界面 ---------- */
-const TAB_HASH = { search: '#/search', fs: '#/fs', favorites: '#/favorites', trash: '#/trash' }
+const TAB_HASH = { search: '#/search', pick: '#/pick', fs: '#/fs', favorites: '#/favorites', trash: '#/trash' }
 function tabFromHash() {
   const h = location.hash
   if (h.startsWith('#/')) {
     const t = h.slice(2)
-    if (['search', 'fs', 'favorites', 'trash'].includes(t)) return t
+    if (['search', 'pick', 'fs', 'favorites', 'trash'].includes(t)) return t
   }
   return null
 }
@@ -954,6 +1606,79 @@ onMounted(() => {
   init()
   window.addEventListener('keydown', onGlobalKey)
   window.addEventListener('hashchange', onHashChange)
+  if (typeof window !== 'undefined') {
+    window.verifyOrder = () => {
+      console.log('%c[FileFinder 列表顺序与分页严密对齐自检]', 'color:#4c8bf5;font-weight:bold;font-size:14px;')
+      const cells = listRef.value ? listRef.value.getCells() : []
+      if (!cells.length) {
+        console.warn('当前视口暂无卡片数据')
+        return
+      }
+      let isStrict = true
+      for (let i = 1; i < cells.length; i++) {
+        if (cells[i].index !== cells[i - 1].index + 1) {
+          isStrict = false
+          console.error(`❌ 发现索引断裂: #${cells[i - 1].index + 1} (${cells[i - 1].item?.name}) -> #${cells[i].index + 1} (${cells[i].item?.name})`)
+        }
+      }
+      if (isStrict) {
+        console.log(`✅ 1. 视口绝对序号连续性：当前展示从 #${cells[0].index + 1} 到 #${cells[cells.length - 1].index + 1}，严格递增无任何断裂！`)
+      }
+      if (listRef.value?.pages) {
+        const pages = [...listRef.value.pages.keys()].sort((a,b)=>a-b)
+        console.log(`✅ 2. 内存分页幂等缓存：当前已缓存页码 [${pages.join(', ')}]，全部由确定性绝对页码生成。`)
+      }
+      return `当前视口展示第 #${cells[0].index + 1} ~ #${cells[cells.length - 1].index + 1} 项，顺序严格正确。`
+    }
+
+    window.compareSequences = (sub = window.__lastCopiedSequence, main = window.__prevCopiedSequence) => {
+      console.log('%c[FileFinder 序列子集与有序性严格校验]', 'color:#4c8bf5;font-weight:bold;font-size:14px;')
+      if (!sub || !sub.length || !main || !main.length) {
+        console.warn('⚠️ 缺少比对序列。请右键目标图片执行两次“复制此前文件名序列”（先复制原序列，收藏并刷新后再次复制新序列），或手动传入两个数组：compareSequences(新序列, 原序列)')
+        return
+      }
+      const missing = []
+      const orderErrors = []
+      let prevMainIdx = -1
+
+      for (let sIdx = 0; sIdx < sub.length; sIdx++) {
+        const name = sub[sIdx]
+        const mainIdx = main.indexOf(name, prevMainIdx + 1)
+        if (mainIdx === -1) {
+          const foundAnywhere = main.indexOf(name)
+          if (foundAnywhere >= 0) {
+            orderErrors.push({ name, subIdx: sIdx, prevMatchedAt: prevMainIdx, foundInMainAt: foundAnywhere })
+          } else {
+            missing.push({ name, subIdx: sIdx })
+          }
+        } else {
+          prevMainIdx = mainIdx
+        }
+      }
+
+      if (!missing.length && !orderErrors.length) {
+        console.log(`%c✅ [验证通过] 新序列（${sub.length} 项）完全是原序列（${main.length} 项）的严格有序子集！`, 'color:#4caf50;font-weight:bold;font-size:13px;')
+        console.log(`ℹ️ 过滤/隐藏的收藏条目数：${main.length - sub.length} 项。剩余所有元素的相对前后顺序 100% 吻合！`)
+        return { ok: true, subLength: sub.length, mainLength: main.length, filteredCount: main.length - sub.length }
+      } else {
+        console.error(`%c❌ [验证失败] 发现序列偏差：`, 'color:#e05c5c;font-weight:bold;font-size:13px;', {
+          新序列总数: sub.length,
+          原序列总数: main.length,
+          不在原序列中的新增项: missing,
+          相对顺序错位项: orderErrors,
+        })
+        return { ok: false, missing, orderErrors }
+      }
+    }
+
+    window.copySequence = async (targetIdx) => {
+      if (typeof targetIdx === 'number') {
+        ctxTarget = { index: targetIdx, item: listRef.value?.getItemByIndex(targetIdx) }
+      }
+      await copySequenceBeforeTarget()
+      return window.__lastCopiedSequence
+    }
+  }
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onGlobalKey)
@@ -970,10 +1695,123 @@ function onGlobalKey(e) {
     onEsc()
     return
   }
-  // 搜索 / 收藏 / 文件系统界面：Delete 键批量移入回收站（高频无确认）
-  if (e.key === 'Delete' && selKeys.value.size && store.tab !== 'trash') {
+  // 全选 Ctrl+A / Cmd+A
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
     e.preventDefault()
-    batchDelete()
+    const all = orderedItems()
+    const next = new Set()
+    for (const it of all) {
+      const k = selKeyOf(it)
+      if (k) next.add(k)
+    }
+    selKeys.value = next
+    return
+  }
+  // 空格键：收藏 / 取消收藏当前选中项（无选中项时开关侧边预览栏）
+  if (e.code === 'Space') {
+    e.preventDefault()
+    if (store.selected && store.tab !== 'trash') {
+      onToggleFav(store.selected)
+      return
+    }
+    store.showPreview = !store.showPreview
+    return
+  }
+  // 拣选模式：Ctrl+Enter 快捷提交本批并切下一批
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && store.tab === 'pick') {
+    e.preventDefault()
+    pickDeleteAndNext()
+    return
+  }
+  // Enter 键：若选中目录则进入该目录
+  if (e.key === 'Enter') {
+    if (store.selected && store.selected.is_dir) {
+      e.preventDefault()
+      onPreviewEnter()
+    }
+    return
+  }
+  // 上下左右方向键：二维智能切换选中图片/文件，视口自动滚动对齐
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+    e.preventDefault()
+    const total = activeTotal.value
+    if (total <= 0) return
+
+    // 获取当前网格每行列数（表格模式固定为 1）
+    const c = (store.viewMode === 'table') ? 1 : Math.max(1, listRef.value?.cols || 1)
+
+    // 确定当前选中的全局绝对索引
+    let curIdx = -1
+    if (store.selected) {
+      if (listRef.value) {
+        curIdx = listRef.value.findIndexById(store.selected.id || store.selected.fav_id)
+      }
+      if (curIdx < 0) {
+        const all = orderedItems()
+        curIdx = all.findIndex(it => it && (it.id === store.selected.id || it.rel_path === store.selected.rel_path))
+      }
+    }
+
+    let nextIdx = 0
+    if (curIdx < 0) {
+      // 当前尚未选中任何项：按方向键默认选中第 0 项
+      nextIdx = 0
+    } else {
+      if (e.key === 'ArrowRight') {
+        nextIdx = curIdx + 1
+      } else if (e.key === 'ArrowLeft') {
+        nextIdx = curIdx - 1
+      } else if (e.key === 'ArrowDown') {
+        nextIdx = curIdx + c
+      } else if (e.key === 'ArrowUp') {
+        nextIdx = curIdx - c
+      }
+    }
+
+    // 限制在有效索引区间 [0, total - 1]
+    nextIdx = Math.max(0, Math.min(total - 1, nextIdx))
+
+    // 自动平滑滚动视口保证目标单元格完全可见
+    if (listRef.value) {
+      listRef.value.ensureIndexVisible(nextIdx)
+    }
+
+    // 获取目标条目并设为当前选中
+    let target = listRef.value ? listRef.value.getItemByIndex(nextIdx) : null
+    if (!target) {
+      const all = orderedItems()
+      target = all[nextIdx] || null
+    }
+
+    if (target) {
+      const k = selKeyOf(target)
+      selKeys.value = new Set([k])
+      selAnchor = k
+      store.selected = target
+      store.previewKey++
+    } else {
+      // 跨页翻查时若目标页正在网络拉取，延时 120ms 再次尝试选中
+      setTimeout(() => {
+        const delayed = listRef.value ? listRef.value.getItemByIndex(nextIdx) : null
+        if (delayed) {
+          const k = selKeyOf(delayed)
+          selKeys.value = new Set([k])
+          selAnchor = k
+          store.selected = delayed
+          store.previewKey++
+        }
+      }, 120)
+    }
+    return
+  }
+  // Delete 键：回收站下彻底删除（带确认）；其他界面批量移入回收站
+  if (e.key === 'Delete' && selKeys.value.size) {
+    e.preventDefault()
+    if (store.tab === 'trash') {
+      batchPurge()
+    } else {
+      batchDelete()
+    }
   }
 }
 
@@ -1053,6 +1891,51 @@ html, body, #app {
 .scope-clear:hover { opacity: 1; }
 .st-spacer { flex: 1; }
 
+/* 拣选模式专用控制条 */
+.pickstrip {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 6px 14px; background: #1c2128;
+  border-bottom: 1px solid #333942;
+  font-size: 12px; color: #adbac7;
+  flex-wrap: wrap; z-index: 7;
+}
+.ps-stat {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.ps-tag {
+  background: #316dca; color: #fff; font-size: 11px; font-weight: 600;
+  border-radius: 4px; padding: 2px 7px;
+}
+.ps-fav { color: #f5b942; display: inline-flex; align-items: center; gap: 4px; }
+.ps-unfav { color: #f85149; display: inline-flex; align-items: center; gap: 4px; }
+.ps-remain { color: #768390; }
+.ps-actions {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.ps-opt {
+  display: inline-flex; align-items: center; gap: 5px; color: #8b949e; font-size: 11.5px;
+}
+.ps-sel {
+  background: #22272e; color: #cdd9e5; border: 1px solid #444c56;
+  border-radius: 4px; padding: 2px 6px; font-size: 11.5px; outline: none; cursor: pointer;
+}
+.ps-sel:focus { border-color: #539bf5; }
+.ps-chk {
+  display: inline-flex; align-items: center; gap: 5px; color: #adbac7; font-size: 11.5px;
+  cursor: pointer; user-select: none;
+}
+.ps-chk input { accent-color: #316dca; cursor: pointer; }
+.ps-btn-del {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 600; padding: 4px 14px; font-size: 12px;
+  border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: all 0.15s ease;
+}
+.ps-btn-del:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(248, 81, 73, 0.35);
+}
+
 /* 表格表头 */
 .tbl-head {
   position: absolute; top: 0; left: 0; right: 0; height: 31px;
@@ -1081,9 +1964,14 @@ html, body, #app {
   border-bottom: 1px solid rgba(255,255,255,.03);
   font-size: 12.5px; color: #c9cdd4; cursor: default;
   white-space: nowrap; overflow: hidden;
+  transition: background 0.15s ease, transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .trow:hover { background: rgba(255,255,255,.04); }
 .trow.sel { background: rgba(76,139,245,.16); }
+.trow.pressing {
+  background: rgba(245, 185, 66, 0.16) !important;
+  transform: scale(0.995);
+}
 .t-ic { width: 26px; flex: 0 0 26px; display: flex; }
 .t-name { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; color: #e3e6eb; }
 .t-ext { flex: 0 0 auto; color: #8b919a; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
@@ -1168,4 +2056,36 @@ html, body, #app {
 .ff-modal-msg { font-size: 13px; color: #b8bdc6; line-height: 1.6; margin-bottom: 16px; }
 .ff-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .ff-modal-actions .st-btn { min-width: 72px; }
+
+/* 浮层轻量 Toast 提示 */
+.toast-tip {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 32, 38, 0.96);
+  border: 1px solid #4caf50;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  color: #e5e7eb;
+  padding: 8px 18px;
+  border-radius: 8px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  pointer-events: none;
+}
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: all 0.25s ease;
+}
+.toast-fade-enter-from {
+  opacity: 0;
+  transform: translate(-50%, -10px);
+}
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -10px);
+}
 </style>
